@@ -1,0 +1,25 @@
+# Python dependencies for the operator PC (venv), for BOTH branches:
+#   - main:                     reachy_control.py + calibrate/customize/load_bomi.py (real Reachy 2 via reachy2_sdk)
+#   - test-simulation-reaching: socket_client.py, reaching_center_out.py / reaching_random.py + the calibration tools
+# The ROS 2 side (socket_server, cmd_vel_publisher, reaching_task, launch files) is NOT covered here:
+# it runs inside the Reachy Docker container with its own ROS Humble stack (rclpy, pyyaml, ...).
+#
+#   python3 -m venv ~/.venvs/reachy_bomi && source ~/.venvs/reachy_bomi/bin/activate
+#   pip install --upgrade pip && pip install -r requirements.txt
+#
+# Optional, system-level (not pip): `sudo apt install wmctrl` keeps the cursor map above the
+# noVNC browser window in socket_client.py (simulation branch only).
+
+# --- common to both branches: hand tracking -> autoencoder cursor -> 9-region velocity ---
+mediapipe>=0.10.14        # Tasks API (HandLandmarker); >=0.10.14 for Python 3.12
+opencv-python>=4.8
+tensorflow>=2.16          # autoencoder map (tensorflow.keras)
+numpy>=1.26
+scipy>=1.11               # cursor filtering (scipy.signal), reaching metrics
+
+# --- main branch only: real robot, object detection / grasping ---
+reachy2-sdk>=1.0          # gRPC connection to Reachy 2 (mobile base, arms, cameras)
+ultralytics>=8.1          # YOLOv8 object detection (yolov8n.pt)
+open3d>=0.18              # depth point cloud processing
+matplotlib>=3.6           # graphs.py diagnostics (calls commented out) + session metrics
+pynput>=1.7               # OS-level ESC/Q emergency-stop watcher (safety.py)
