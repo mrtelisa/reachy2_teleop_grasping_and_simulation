@@ -1,6 +1,6 @@
-# reachy_bomi
+# reachy2_teleop_grasping_and_simulation
 
-A ROS 2 package that turns **hand movements into velocity commands for the Reachy 2 mobile base**.
+`reachy_bomi` — a ROS 2 package that turns **hand movements into velocity commands for the Reachy 2 mobile base**.
 
 A webcam tracks the operator's hand with [MediaPipe](https://developers.google.com/mediapipe), a calibrated autoencoder map converts the hand pose into a 2D cursor, and the cursor position is mapped to linear/angular velocities. Those velocities are streamed over a TCP socket to the robot side, republished on ROS 2 topics, and finally written to `/cmd_vel`, so the base moves in a Gazebo simulation (or on the real robot).
 
@@ -51,7 +51,7 @@ sudo apt install wmctrl   # optional: keeps the cursor map above the browser win
 ```
 If necessary, create a virtual environment.
 
-`socket_client.py` uses the MediaPipe **Tasks API** (`HandLandmarker`), which needs a `hand_landmarker.task` model file — it's not bundled with the `mediapipe` pip package. Download it once and point `--model` at it (default: `scripts/hand_landmarker.task` inside the package):
+`socket_client.py` uses the MediaPipe **Tasks API** (`HandLandmarker`), which needs a `hand_landmarker.task` model file — it's not bundled with the `mediapipe` pip package, so a copy is tracked at `scripts/hand_landmarker.task` (the default for `--model`). If you need to re-download it:
 
 ```bash
 curl -o scripts/hand_landmarker.task \
@@ -68,7 +68,7 @@ Clone the package into the `src/` folder of a ROS 2 workspace and build it:
 
 ```bash
 cd ~/ros2_ws/src
-git clone https://github.com/mrtelisa/reachy_bomi.git
+git clone https://github.com/mrtelisa/reachy2_teleop_grasping_and_simulation.git
 cd ~/ros2_ws
 colcon build --packages-select reachy_bomi
 source install/setup.bash
@@ -85,7 +85,7 @@ The host runs the client (Ubuntu 24.04 / ROS Jazzy, or no ROS at all); the whole
 ```bash
 # once: create the container (the repo is mounted, so the code inside is always the host's)
 docker run -it --name reachy_sim -p 6080:6080 \
-  -v ~/Desktop/Tesi/Code/reachy_bomi:/home/reachy/reachy_ws/src/reachy_bomi \
+  -v ~/Desktop/Tesi/Code/reachy2_teleop_grasping_and_simulation:/home/reachy/reachy_ws/src/reachy_bomi \
   reachy_completo:latest            # or pollenrobotics/reachy2:latest
 
 # every session: open a shell in the container, build once, start the bridge
@@ -229,7 +229,7 @@ Scenarios are defined in [`config/scenarios.yaml`](config/scenarios.yaml): each 
 ## Package layout
 
 ```
-reachy_bomi/
+reachy2_teleop_grasping_and_simulation/
 ├── reachy_bomi/                    # ROS 2 Python package
 │   ├── socket_client.py            # operator-side client (MediaPipe → cursor → socket)
 │   ├── socket_server.py            # ROS 2 node: socket → ROS topics (bridge)
@@ -253,9 +253,9 @@ reachy_bomi/
 │   ├── familiarization.world
 │   └── reaching.world
 ├── scripts/
-│   ├── hand_landmarker.task        # MediaPipe model (download separately, see Requirements)
+│   ├── hand_landmarker.task        # MediaPipe model (tracked, see Requirements)
 │   └── container_tweaks.sh         # tweaks to re-apply inside the Reachy Docker container
-├── calibrations/                   # saved hand-to-cursor calibrations (.npz, not versioned)
+├── calibrations/                   # saved hand-to-cursor calibrations (folder tracked via .gitkeep, the .npz files are not)
 ├── resource/reachy_bomi            # ament resource marker
 ├── package.xml, setup.py, setup.cfg
 └── README.md

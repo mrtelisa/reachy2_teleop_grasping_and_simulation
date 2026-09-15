@@ -4,6 +4,7 @@ __pycache__/
 build/
 install/
 log/
+# Saved BoMI calibrations (calibrations/*.npz)
 *.npz
 *.png
 # Cursor reaching test outputs (reaching_center_out.py / reaching_random.py)
