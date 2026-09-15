@@ -1,6 +1,6 @@
-# reachy_bomi
+# reachy2_teleop_grasping_and_simulation
 
-A package that turns **hand movements into control of a Reachy 2 robot**: driving its mobile base, and selecting + grasping objects it sees through its torso depth camera.
+`reachy_bomi` — a package that turns **hand movements into control of a Reachy 2 robot**: driving its mobile base, and selecting + grasping objects it sees through its torso depth camera.
 
 A webcam tracks the operator's hand with [MediaPipe](https://developers.google.com/mediapipe), a calibrated autoencoder map converts the hand pose into a 2D cursor, and the cursor position drives either base velocity commands or object hover-selection. Grasp planning turns a YOLOv8 detection + depth camera point cloud into pre-grasp/grasp/lift end-effector poses, executed over [`reachy2_sdk`](https://github.com/pollen-robotics/reachy2-sdk) (gRPC over IP) — no ROS 2 networking is involved between the operator's PC and the robot.
 
@@ -22,7 +22,7 @@ webcam → MediaPipe → autoencoder cursor → 9-region velocity → reachy2_sd
 
 `reachy_control.py` is the only script with a CLI/`main()` for real robot use — `bomi_teleop.py`, `reachy_detection.py`, `reachy_selection.py`, `reachy_pregrasp.py`, `reachy_grasp.py`, `camera_viewer.py`, `stream.py`, `safety.py`, `graphs.py` and `session_metrics.py` are library modules it's built from; `calibrate_bomi.py`, `customize_bomi.py` and `load_bomi.py` manage calibrations on their own.
 
-- **`bomi_teleop.py`** — hand tracking → autoencoder cursor → 9-region velocity building blocks (calibration/cursor-preview phases, the BoMI map, cursor filter, velocity helpers). `BoMIMap.save_map_bomi`/`load_map_bomi` (de)serialize a fitted map to/from a `.npz` file; `resolve_calib_path` turns a bare name into a path inside `CALIB_DIR` (a `calibrations/` folder next to the package, created on first save, not tracked by git).
+- **`bomi_teleop.py`** — hand tracking → autoencoder cursor → 9-region velocity building blocks (calibration/cursor-preview phases, the BoMI map, cursor filter, velocity helpers). `BoMIMap.save_map_bomi`/`load_map_bomi` (de)serialize a fitted map to/from a `.npz` file; `resolve_calib_path` turns a bare name into a path inside `CALIB_DIR` (the `calibrations/` folder next to the package; the saved `.npz` files are not tracked by git).
 - **`calibrate_bomi.py`** — standalone tool: run calibration, preview the fitted map live (nothing sent anywhere, no robot needed), then `S` prompts for a name and saves it, `Q` quits without saving. Stays in the preview loop after a cancelled save so you can retry.
 - **`load_bomi.py`** — standalone tool: loads a calibration saved by `calibrate_bomi.py` by name and lets you try it live on the cursor map (again, no robot). Missing name → lists the `.npz` files actually found in `calibrations/`.
 - **`customize_bomi.py`** — standalone tool: rotate/flip/scale/offset a saved calibration live and save it under a new name (no robot).
@@ -50,7 +50,7 @@ Dependencies between these run one way only, with no cycles: `reachy_grasp.py`/`
 pip install reachy2-sdk mediapipe opencv-python tensorflow numpy scipy ultralytics matplotlib open3d pynput
 ```
 
-`reachy_control.py` uses the MediaPipe **Tasks API** (`HandLandmarker`), which needs a `hand_landmarker.task` model file — it's not bundled with the `mediapipe` pip package. Download it once and point `--model` at it (default: `hand_landmarker.task` at the package root):
+`reachy_control.py` uses the MediaPipe **Tasks API** (`HandLandmarker`), which needs a `hand_landmarker.task` model file — it's not bundled with the `mediapipe` pip package, so a copy is tracked at the repo root (the default for `--model`). If you need to re-download it:
 
 ```bash
 curl -o hand_landmarker.task \
@@ -69,7 +69,7 @@ Clone the package into the `src/` folder of a (ROS 2, optional) workspace and bu
 
 ```bash
 cd ~/ros2_ws/src
-git clone https://github.com/mrtelisa/reachy_bomi.git
+git clone https://github.com/mrtelisa/reachy2_teleop_grasping_and_simulation.git
 cd ~/ros2_ws
 colcon build --packages-select reachy_bomi
 source install/setup.bash
@@ -151,7 +151,7 @@ python3 reachy_bomi/load_bomi.py NAME [--cam 0] [--model hand_landmarker.task]
 ## Package layout
 
 ```
-reachy_bomi/
+reachy2_teleop_grasping_and_simulation/
 ├── reachy_bomi/                     # Python package
 │   ├── __init__.py
 │   ├── reachy_control.py            # THE entry point: ties bomi_teleop/reachy_detection/reachy_selection/reachy_pregrasp/reachy_grasp together under one BoMI cursor
@@ -169,9 +169,9 @@ reachy_bomi/
 │   ├── graphs.py                    # library: matplotlib diagnostics (point cloud stages, grasp plan), calls commented out
 │   ├── safety.py                    # library: quit/shutdown safety net (local check + OS-level global watcher)
 │   └── yolov8n.pt                   # YOLOv8 weights (auto-downloaded by ultralytics on first run)
-├── calibrations/                     # saved BoMIMap .npz files (created on first save, not tracked by git)
+├── calibrations/                     # saved BoMIMap .npz files (folder tracked via .gitkeep, the .npz files are not)
 ├── results_robot/                    # session metrics JSON files (created on first run, not tracked by git)
-├── hand_landmarker.task              # MediaPipe model (download separately, see Requirements)
+├── hand_landmarker.task              # MediaPipe model (tracked, see Requirements)
 ├── resource/
 │   └── reachy_bomi                  # ament resource marker
 ├── package.xml
