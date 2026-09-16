@@ -119,7 +119,7 @@ def main() -> None:
         os.makedirs(bomi_teleop.CALIB_DIR, exist_ok=True)
         bomi_map.save_map_bomi(map_path)
         print(f"Map saved to {map_path}")
-        customized = [n for n in bomi_teleop.list_saved_maps() if n.endswith(bomi_teleop.CUSTOM_SUFFIX)]
+        customized = [n for n in bomi_teleop.list_saved_maps() if bomi_teleop.is_custom_map_name(n)]
         if customized:
             print(f"[WARN] Existing customizations ({', '.join(customized)}) were made on the previous map: "
                   "redo customize_bomi.py for participants still to be tested.")

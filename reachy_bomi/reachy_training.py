@@ -181,10 +181,13 @@ def main() -> None:
                              f"(default: {bomi_teleop.DEFAULT_MODEL_PATH}).")
     parser.add_argument("--calib", default=None,
                         help="Map to load (calibrations/<NAME>.npz) instead of the participant's "
-                             "calibrations/<subject>_custom.npz from customize_bomi.py")
+                             "map resolved from --subject")
     parser.add_argument("--subject", default="S000",
-                        help="Subject id for the session metrics files in results_training/ (default: S000)")
+                        help="Participant id: loads calibrations/<subject>.npz if it exists, else the latest "
+                             "calibrations/<subject>_<date>_<time>.npz from customize_bomi.py; also names the "
+                             "session metrics files in results_training/ (default: S000)")
     cli_args = parser.parse_args()
+    cli_args.subject = bomi_teleop.strip_npz(cli_args.subject)  # "elisa.npz" -> "elisa" in the metrics file names
 
     global _metrics
     _metrics = session_metrics.SessionMetrics(cli_args.subject, dwell_seconds=DWELL_SECONDS, results_dir=RESULTS_DIR)
@@ -202,7 +205,8 @@ def main() -> None:
     else:
         calib_path = bomi_teleop.resolve_subject_map_path(cli_args.subject)
     if not os.path.exists(calib_path):
-        print(f"[ERROR] No calibration map '{calib_path}' found: "
+        print(f"[ERROR] No calibration map for '{cli_args.subject}' found (neither {os.path.basename(calib_path)} "
+              f"nor {bomi_teleop.strip_npz(cli_args.subject)}_<date>_<time>.npz): "
               f"run customize_bomi.py {cli_args.subject} first.")
         available = bomi_teleop.list_saved_maps()
         if available:

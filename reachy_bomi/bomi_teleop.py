@@ -6,8 +6,10 @@ cursor-preview phases. Library module used by reachy_control.py and the
 calibration tools.
 """
 
+import datetime
 import json
 import os
+import re
 import sys
 import time
 
@@ -66,7 +68,11 @@ CALIB_DURATION_S = 90.0
 # participant (customize_bomi.py) -- as markerlessBoMI was used
 SHARED_MAP_NAME = "shared"      # calibrations/shared.npz (+ shared_calib.npy, its raw samples)
 SAMPLES_SUFFIX = "_calib.npy"   # raw calibration samples (markerlessBoMI's SXXX_Calib.txt)
-CUSTOM_SUFFIX = "_custom"       # a participant's customized map (its rotation/scale/offset_custom.txt)
+# A participant's customized map (markerlessBoMI's rotation/scale/offset_custom.txt):
+# calibrations/<subject>_<YYYYMMDD_HHMMSS>.npz, so several customizations of the
+# same participant coexist and "<subject>" alone resolves to the latest one
+CUSTOM_TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
+_CUSTOM_TIMESTAMP_RE = r"_\d{8}_\d{6}"
 
 
 def resolve_calib_path(name: str) -> str:
@@ -83,16 +89,46 @@ def resolve_samples_path(name: str) -> str:
     return os.path.join(CALIB_DIR, name + SAMPLES_SUFFIX)
 
 
-def resolve_subject_map_path(subject: str) -> str:
-    """Participant id -> calibrations/<subject>_custom.npz (from customize_bomi.py)."""
-    return resolve_calib_path(subject + CUSTOM_SUFFIX)
-
-
 def list_saved_maps() -> list:
     """Names of the .npz maps found in CALIB_DIR (for error messages)."""
     if not os.path.isdir(CALIB_DIR):
         return []
     return sorted(f[:-4] for f in os.listdir(CALIB_DIR) if f.endswith(".npz"))
+
+
+def strip_npz(name: str) -> str:
+    return name[:-4] if name.endswith(".npz") else name
+
+
+def custom_map_name(subject: str) -> str:
+    """New customized-map name for a participant: <subject>_<YYYYMMDD_HHMMSS>."""
+    return f"{strip_npz(subject)}_{datetime.datetime.now().strftime(CUSTOM_TIMESTAMP_FMT)}"
+
+
+def is_custom_map_name(name: str) -> bool:
+    """True for a customize_bomi.py map name (<subject>_<YYYYMMDD_HHMMSS>)."""
+    return re.search(_CUSTOM_TIMESTAMP_RE + r"$", name) is not None
+
+
+def custom_maps_of(subject: str) -> list:
+    """Customized maps of a participant found in CALIB_DIR (names, oldest first)."""
+    pattern = re.compile(re.escape(strip_npz(subject)) + _CUSTOM_TIMESTAMP_RE + r"$")
+    return sorted(n for n in list_saved_maps() if pattern.match(n))
+
+
+def resolve_subject_map_path(subject: str) -> str:
+    """What --subject means for a map: calibrations/<subject>.npz if that exact
+    file exists (a map name, with or without .npz), else the latest
+    customization calibrations/<subject>_<YYYYMMDD_HHMMSS>.npz saved by
+    customize_bomi.py. Returns the exact-name path (not existing) if neither
+    is there, so callers can report it."""
+    exact = resolve_calib_path(strip_npz(subject))
+    if os.path.exists(exact):
+        return exact
+    customs = custom_maps_of(subject)
+    if customs:
+        return resolve_calib_path(customs[-1])
+    return exact
 
 
 def save_calib_samples(path: str, samples: list) -> None:

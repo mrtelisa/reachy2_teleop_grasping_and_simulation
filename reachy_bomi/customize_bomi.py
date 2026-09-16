@@ -3,14 +3,14 @@
 Step 2, once per participant (no robot needed): markerlessBoMI's
 "Customization". Loads the shared autoencoder map (calibrations/shared.npz,
 from calibrate_bomi.py), lets you rotate / flip / scale / offset it live on the
-participant's hand and saves it as calibrations/<SUBJECT>_custom.npz -- the map
-reachy_training.py / reachy_control.py --subject SUBJECT load. The shared map
-is untouched.
+participant's hand and saves it as calibrations/<SUBJECT>_<YYYYMMDD_HHMMSS>.npz
+-- reachy_training.py / reachy_control.py, given --subject SUBJECT, load the
+latest of those. The shared map is untouched.
 
 Keys: [ / ] rotate, i / o flip X / Y, - / = scale, h j k l offset, r reset,
-      s save, q quit
+      s save (asks the participant id, default SUBJECT; '-' cancels), q quit
 
-    python3 customize_bomi.py SUBJECT [--base NAME] [--cam INDEX] [--model PATH]
+    python3 customize_bomi.py [SUBJECT] [--base NAME] [--cam INDEX] [--model PATH]
 """
 
 import argparse
@@ -34,21 +34,29 @@ HELP_TEXT = (
 )
 
 
-def _prompt_and_save(bomi_map: bomi_teleop.BoMIMap, default_name: str) -> bool:
-    """Returns True once the map is actually saved (False if the user cancels
-    with '-', so the caller keeps previewing). Blank = default_name."""
-    name = input(f"Save participant map as [{default_name}] ('-' = cancel): ").strip()
-    if name == "-":
-        print("Cancelled.")
-        return False
-    path = bomi_teleop.resolve_calib_path(name or default_name)
+def _prompt_and_save(bomi_map: bomi_teleop.BoMIMap, subject: str) -> bool:
+    """Asks the participant id (default: subject, if given on the command line)
+    and saves the map as calibrations/<id>_<YYYYMMDD_HHMMSS>.npz, the file
+    "--subject <id>" resolves to everywhere. Returns True once saved (False if
+    the user cancels with '-', so the caller keeps previewing)."""
+    hint = f" [{subject}]" if subject else ""
+    while True:
+        name = input(f"Participant id to save the map for{hint} ('-' = cancel): ").strip()
+        if name == "-":
+            print("Cancelled.")
+            return False
+        name = name or subject
+        if name:
+            break
+        print("  Type a participant id (e.g. elisa or S001).")
+    path = bomi_teleop.resolve_calib_path(bomi_teleop.custom_map_name(name))
     os.makedirs(bomi_teleop.CALIB_DIR, exist_ok=True)
     bomi_map.save_map_bomi(path)
     print(f"Saved to {path}")
     return True
 
 
-def _customize_and_save(cap, landmarker, calib_path: str, default_name: str) -> None:
+def _customize_and_save(cap, landmarker, calib_path: str, subject: str) -> None:
     bomi_map = bomi_teleop.BoMIMap()
     bomi_map.load_map_bomi(calib_path)
 
@@ -92,7 +100,7 @@ def _customize_and_save(cap, landmarker, calib_path: str, default_name: str) -> 
             bomi_map.load_map_bomi(calib_path)
             print("Reset to the original calibration.")
         elif key == ord('s'):
-            if _prompt_and_save(bomi_map, default_name):
+            if _prompt_and_save(bomi_map, subject):
                 return
         elif safety.quit_requested(key, map_window):
             print("Closed without saving.")
@@ -103,7 +111,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("subject", help="Participant id, e.g. S001: saves to calibrations/S001_custom.npz")
+    parser.add_argument("subject", nargs="?", default=None,
+                        help="Participant id, e.g. elisa: the map is saved as calibrations/elisa_<date>_<time>.npz "
+                             "(can also be typed at the save prompt)")
     parser.add_argument("--base", default=bomi_teleop.SHARED_MAP_NAME,
                         help=f"Map to customize, calibrations/<NAME>.npz (default: {bomi_teleop.SHARED_MAP_NAME})")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
@@ -118,9 +128,7 @@ def main() -> None:
         if available:
             print("        Available: " + ", ".join(available))
         sys.exit(1)
-    default_name = cli_args.subject
-    if not default_name.endswith(bomi_teleop.CUSTOM_SUFFIX):
-        default_name += bomi_teleop.CUSTOM_SUFFIX
+    subject = bomi_teleop.strip_npz(cli_args.subject) if cli_args.subject else None
 
     if not os.path.exists(cli_args.model):
         print(f"[ERROR] MediaPipe model not found: '{cli_args.model}'")
@@ -146,7 +154,7 @@ def main() -> None:
         )
         landmarker = hand_landmarker.HandLandmarker.create_from_options(landmarker_options)
 
-        _customize_and_save(cap, landmarker, calib_path, default_name)
+        _customize_and_save(cap, landmarker, calib_path, subject)
     finally:
         if cap is not None:
             cap.release()
