@@ -21,6 +21,10 @@ Box = reachy_detection.Box
 
 # [s], single dwell time for all hover-to-select/confirm interactions
 DWELL_HOLD_SECONDS = 3.0
+# [s], longer dwell for the region-5 holds of reachy_control.py's Control loop
+# (Control -> pre-grasp pose, pre-grasp Control -> object selection), so they
+# are not triggered by accident
+MODE_SWITCH_HOLD_SECONDS = 10.0
 
 HOVER_HOLD_SECONDS = DWELL_HOLD_SECONDS
 HOVER_IOU_MATCH = 0.3     # min overlap between frames to count as "still hovering the same object"

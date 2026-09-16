@@ -53,7 +53,8 @@ import session_metrics
 
 DEFAULT_ROBOT_IP = "192.168.0.121"
 
-SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS
+SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds, Repositioning -> object selection
+MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # Control dwells: -> pre-grasp pose, -> object selection
 
 HALVED_SPEED_FACTOR = 0.75   # velocity multiplier once the arms are in the pre-grasp pose
 
@@ -343,7 +344,7 @@ def _abort_and_shutdown(reachy, mobile_base, reason: str) -> None:
 def teleop_with_grasp_switch(cap, landmarker, bomi_map, mobile_base, depth_cam, model, confidence, reachy, robot_ip,
                                cursor_filter=None, crs_x=None, crs_y=None) -> None:
     """Control loop: cursor -> 9-region velocities -> mobile base. Holding the
-    cursor in region 5 for SELECTION_HOLD_SECONDS opens a Yes/No dialog: the
+    cursor in region 5 for MODE_SWITCH_HOLD_SECONDS opens a Yes/No dialog: the
     first Yes moves the arms to the pre-grasp pose and resumes Control at
     reduced speed, the second one opens object selection; No goes back to
     driving through a cursor preview. Pass the preview's cursor_filter/crs_x/
@@ -366,7 +367,7 @@ def teleop_with_grasp_switch(cap, landmarker, bomi_map, mobile_base, depth_cam, 
         mobile_base.send_speed_command()
 
     print("\n=== CONTROL ===  Q = quit  |  hold the cursor centered (region 5) "
-          f"for {SELECTION_HOLD_SECONDS:.0f}s to move to the pre-grasping pose")
+          f"for {MODE_SWITCH_HOLD_SECONDS:.0f}s to move to the pre-grasping pose")
     if _metrics is not None:
         _metrics.start_test()   # Reachy starts moving after the cursor preview: test starts here
 
@@ -396,7 +397,7 @@ def teleop_with_grasp_switch(cap, landmarker, bomi_map, mobile_base, depth_cam, 
         now = time.time()
         center_hold_start = (center_hold_start or now) if (hand_detected and region == 5) else None
         center_progress = (
-            min((now - center_hold_start) / SELECTION_HOLD_SECONDS, 1.0) if center_hold_start else 0.0
+            min((now - center_hold_start) / MODE_SWITCH_HOLD_SECONDS, 1.0) if center_hold_start else 0.0
         )
         if _metrics is not None:
             _metrics.region_tick(region, now)
@@ -451,7 +452,7 @@ def teleop_with_grasp_switch(cap, landmarker, bomi_map, mobile_base, depth_cam, 
             speed_scale = HALVED_SPEED_FACTOR
             center_hold_start = None
             print("\nPre-grasping pose reached. Control resumed at limited speed — "
-                  f"hold the cursor centered (region 5) for {SELECTION_HOLD_SECONDS:.0f}s "
+                  f"hold the cursor centered (region 5) for {MODE_SWITCH_HOLD_SECONDS:.0f}s "
                   "to open object selection")
             continue
 
@@ -623,7 +624,7 @@ def main() -> None:
 
     global _metrics
     # optimal path length for normalized_path_length: session_metrics.DEFAULT_OPTIMAL_PATH_LENGTH
-    _metrics = session_metrics.SessionMetrics(cli_args.subject, dwell_seconds=SELECTION_HOLD_SECONDS)
+    _metrics = session_metrics.SessionMetrics(cli_args.subject, dwell_seconds=MODE_SWITCH_HOLD_SECONDS)
 
     if not os.path.exists(cli_args.model):
         print(f"[ERROR] MediaPipe model not found: '{cli_args.model}'")

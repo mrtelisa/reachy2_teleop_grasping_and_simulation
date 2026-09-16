@@ -51,7 +51,7 @@ import session_metrics
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_training")
 
-DWELL_SECONDS = reachy_control.SELECTION_HOLD_SECONDS   # 3 s, as in the test
+DWELL_SECONDS = reachy_control.SELECTION_HOLD_SECONDS   # 3 s (the test's 10 s is only for its mode switches)
 END_PROMPT = ["Do you want to end the training?"]
 
 _metrics: Optional[session_metrics.SessionMetrics] = None   # session metrics, created in main()
