@@ -329,10 +329,16 @@ class Screen:
     def __init__(self, title: str = WINDOW) -> None:
         self.window = title
         cv2.namedWindow(self.window, cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty(self.window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        # Show a frame BEFORE asking for fullscreen: some OpenCV builds (e.g.
+        # the opencv-python 4.13 wheel, Qt backend) ignore the property on a
+        # window that has not been mapped yet and leave a tiny 400x216 window.
         cv2.imshow(self.window, np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8))
-        cv2.waitKey(50)
+        cv2.waitKey(100)
+        cv2.setWindowProperty(self.window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.waitKey(300)   # let the window manager apply it before reading the size
         _, _, w, h = cv2.getWindowImageRect(self.window)
+        if cv2.getWindowProperty(self.window, cv2.WND_PROP_FULLSCREEN) != cv2.WINDOW_FULLSCREEN:
+            print(f"[WARNING] fullscreen not applied by this OpenCV/desktop, window is {w}x{h}")
         if w <= 0 or h <= 0:
             w, h = CANVAS_W, CANVAS_H
         self.w, self.h = w, h
