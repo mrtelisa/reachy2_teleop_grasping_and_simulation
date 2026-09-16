@@ -27,7 +27,7 @@ previous sessions gets _1, _2, ... appended):
   results_center_out/<subject>_center_out_summary.json   success rate, mean metrics, config
 
 Usage:
-    python3 reaching_center_out.py --calib <name> --subject S001 [--cam 0]
+    python3 reaching_center_out.py --subject S001 [--calib <name>] [--cam 0]
 (reaching_random.py runs the same test with targets in random order and no
 returns to the centre; it reuses everything in this file.)
 Keys: Q / ESC = abort (results so far are still saved).
@@ -402,15 +402,24 @@ class Screen:
 def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "center_out",
          description: str = __doc__) -> None:
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--calib", required=True, help="Calibration to load, e.g. 'elisa' for calibrations/elisa.npz")
-    parser.add_argument("--subject", default="S000", help="Subject id used in the result file names (default: S000)")
+    parser.add_argument("--subject", default="S000",
+                        help="Participant id: loads calibrations/<subject>.npz if it exists, else the latest "
+                             "calibrations/<subject>_<date>_<time>.npz from customize_bomi.py; also names the "
+                             "result files (default: S000)")
+    parser.add_argument("--calib", default=None,
+                        help="Map to load (calibrations/<NAME>.npz) instead of the participant's own")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--model", default=bomi.DEFAULT_MODEL_PATH, help="MediaPipe hand_landmarker.task model")
     args = parser.parse_args()
 
-    calib_path = bomi._resolve_calib_path(args.calib)
+    subject = bomi._strip_npz(args.subject)  # "elisa.npz" -> "elisa" in the result file names
+    calib_path = bomi._resolve_calib_path(args.calib) if args.calib else bomi._resolve_subject_map_path(args.subject)
     if not os.path.exists(calib_path):
-        print(f"[ERROR] No calibration file '{calib_path}' found.")
+        print(f"[ERROR] No calibration map for '{args.subject}' found (neither {os.path.basename(calib_path)} "
+              f"nor {subject}_<date>_<time>.npz): run customize_bomi.py {subject} first.")
+        available = bomi._list_saved_maps()
+        if available:
+            print("        Available: " + ", ".join(available))
         sys.exit(1)
     if not os.path.exists(args.model):
         print(f"[ERROR] MediaPipe model not found: '{args.model}'")
@@ -419,6 +428,7 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
     bomi_map = bomi.BoMIMap()
     bomi_map.load(calib_path)
     print(f"Loaded calibration from {calib_path}")
+    bomi_map.print_metrics()
 
     cap = cv2.VideoCapture(args.cam)
     if not cap.isOpened():
@@ -435,7 +445,7 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
         )
     )
 
-    test = ReachingCursorTest(args.subject, trials=build(), results_dir=results_dir, sequence=sequence)
+    test = ReachingCursorTest(subject, trials=build(), results_dir=results_dir, sequence=sequence)
     screen = Screen(title=f"BoMI - Reaching ({sequence})")
     cursor_filter = bomi.CursorFilter()
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas, same calibration as the robot

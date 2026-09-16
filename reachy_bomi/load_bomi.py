@@ -2,14 +2,14 @@
 """
 Standalone BoMI calibration loader -- no robot connection needed.
 
-Loads a calibration previously saved with calibrate_bomi.py (or socket_client.py --calibrate) and lets you
-try/use it live on the cursor map (9-region grid + cursor, fullscreen). Q = quit.
+Loads a map the way --subject does everywhere: calibrations/<NAME>.npz if it
+exists (e.g. "shared" from calibrate_bomi.py, or a full customized-map name),
+else the participant's latest calibrations/<NAME>_<date>_<time>.npz from
+customize_bomi.py -- and lets you try/use it live on the cursor
+map (9-region grid + cursor, fullscreen), e.g. for familiarisation. Q = quit.
 
 Usage:
-    python3 load_bomi.py NAME [--cam INDEX] [--model PATH]
-
-    NAME is the calibration to load, e.g. "elisa" for
-    calibrations/elisa.npz (the .npz extension is optional).
+    python3 load_bomi.py SUBJECT|NAME [--cam INDEX] [--model PATH]
 """
 
 import argparse
@@ -46,19 +46,19 @@ def _use_map(cap, landmarker, bomi_map: bomi.BoMIMap) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("name", help="Calibration to load, e.g. 'elisa' for calibrations/elisa.npz")
+    parser.add_argument("name", help="Map name (calibrations/<name>.npz, e.g. 'shared') or participant id "
+                                     "(its latest calibrations/<id>_<date>_<time>.npz)")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--model", default=bomi.DEFAULT_MODEL_PATH,
                         help="Path to the MediaPipe hand_landmarker.task model.")
     cli_args = parser.parse_args()
 
-    calib_path = bomi._resolve_calib_path(cli_args.name)
+    calib_path = bomi._resolve_subject_map_path(cli_args.name)
     if not os.path.exists(calib_path):
-        print(f"[ERROR] No calibration file '{calib_path}' found.")
-        if os.path.isdir(bomi.CALIB_DIR):
-            available = [f for f in os.listdir(bomi.CALIB_DIR) if f.endswith(".npz")]
-            if available:
-                print("        Available: " + ", ".join(sorted(available)))
+        print(f"[ERROR] No calibration map for '{cli_args.name}' found.")
+        available = bomi._list_saved_maps()
+        if available:
+            print("        Available: " + ", ".join(available))
         sys.exit(1)
 
     if not os.path.exists(cli_args.model):
@@ -69,6 +69,7 @@ def main() -> None:
     bomi_map = bomi.BoMIMap()
     bomi_map.load(calib_path)
     print(f"Loaded calibration from {calib_path}")
+    bomi_map.print_metrics()
 
     cap = None
     landmarker = None

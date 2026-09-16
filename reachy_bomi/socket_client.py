@@ -8,20 +8,19 @@ Dependencies:
     (optional: `sudo apt install wmctrl` to keep the cursor map above the browser)
 
 Usage:
-    # First time: run calibration and save it to the calib file
-    python3 socket_client.py <server_ip> --calibrate
-
-    # Next times (default): load the saved calibration, no calibration phase
-    python3 socket_client.py <server_ip>
+    # Beforehand, without the robot: calibrate_bomi.py once (shared autoencoder
+    # map), then customize_bomi.py SUBJECT per participant.
+    python3 socket_client.py <server_ip> --subject S001
 
     <server_ip> is optional; if omitted, HOST (set in this file) is used.
 
     Options:
-        --calibrate            Run the calibration phase and save it. If omitted
-                               (default), the saved calibration is loaded instead.
-        --calib PATH           Calibration file. A bare filename is saved in the
-                               calibrations/ folder inside the package.
-                               Default: bomi_calib.npz
+        --subject ID           Participant id (or map name): loads
+                               calibrations/<ID>.npz if it exists, else the latest
+                               calibrations/<ID>_<date>_<time>.npz saved by
+                               customize_bomi.py. Default: S000
+        --calib NAME           Load calibrations/<NAME>.npz instead (e.g. "shared"
+                               to try the uncustomized map).
         --model PATH           Path to the MediaPipe hand_landmarker.task model.
                                Default: scripts/hand_landmarker.task inside the package.
         --port PORT            Robot socket port. Default: 5051
@@ -42,9 +41,9 @@ Usage:
         --show-cam             Also show the webcam feed with landmarks during
                                control (off by default: only the cursor map is shown).
 
-Phase 1 - Calibration (only with --calibrate):
-    Move your hand through all positions you intend to use.
-    SPACE = record sample   |   ENTER = finish (min 30 samples required)
+Phase 1 - Map loading:
+    No calibration happens here: the participant's map is loaded from
+    calibrations/ (fails fast if missing).
 
 Phase 2 - Cursor preview:
     Same cursor map as Control, but nothing is sent to the robot. Hold the
@@ -59,7 +58,10 @@ Phase 3 - Control:
 """
 
 import argparse
+import datetime
+import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -110,7 +112,20 @@ DEFAULT_HOST = "192.168.1.100"
 # (inside the reachy_bomi package). A bare --calib filename is placed there;
 # a --calib value that already contains a path is used as-is.
 CALIB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "calibrations")
-DEFAULT_CALIB_FILE = "bomi_calib.npz"
+
+# Continuous calibration, as in markerlessBoMI: the hand is recorded on every
+# tracked frame for CALIB_DURATION_S (90 s there, at 50 Hz -> ~4500 samples)
+CALIB_DURATION_S = 90.0
+
+# One autoencoder map, trained once (calibrate_bomi.py) and customized per
+# participant (customize_bomi.py) -- as markerlessBoMI was used
+SHARED_MAP_NAME = "shared"      # calibrations/shared.npz (+ shared_calib.npy, its raw samples)
+SAMPLES_SUFFIX = "_calib.npy"   # raw calibration samples (markerlessBoMI's SXXX_Calib.txt)
+# A participant's customized map (markerlessBoMI's rotation/scale/offset_custom.txt):
+# calibrations/<subject>_<YYYYMMDD_HHMMSS>.npz, so several customizations of the
+# same participant coexist and "<subject>" alone resolves to the latest one
+CUSTOM_TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
+_CUSTOM_TIMESTAMP_RE = r"_\d{8}_\d{6}"
 
 # MediaPipe Tasks hand-landmarker model (.task), lives in the 'scripts/' folder
 # next to this package by default.
@@ -127,6 +142,62 @@ def _resolve_calib_path(calib_arg: str) -> str:
     if os.path.dirname(calib_arg):
         return calib_arg
     return os.path.join(CALIB_DIR, calib_arg)
+
+
+def _resolve_samples_path(name: str) -> str:
+    """Map name -> calibrations/<name>_calib.npy (the raw calibration samples)."""
+    return os.path.join(CALIB_DIR, name + SAMPLES_SUFFIX)
+
+
+def _strip_npz(name: str) -> str:
+    return name[:-4] if name.endswith(".npz") else name
+
+
+def _custom_map_name(subject: str) -> str:
+    """New customized-map name for a participant: <subject>_<YYYYMMDD_HHMMSS>."""
+    return f"{_strip_npz(subject)}_{datetime.datetime.now().strftime(CUSTOM_TIMESTAMP_FMT)}"
+
+
+def _is_custom_map_name(name: str) -> bool:
+    """True for a customize_bomi.py map name (<subject>_<YYYYMMDD_HHMMSS>)."""
+    return re.search(_CUSTOM_TIMESTAMP_RE + r"$", name) is not None
+
+
+def _custom_maps_of(subject: str) -> list:
+    """Customized maps of a participant found in CALIB_DIR (names, oldest first)."""
+    pattern = re.compile(re.escape(_strip_npz(subject)) + _CUSTOM_TIMESTAMP_RE + r"$")
+    return sorted(n for n in _list_saved_maps() if pattern.match(n))
+
+
+def _resolve_subject_map_path(subject: str) -> str:
+    """What --subject means for a map: calibrations/<subject>.npz if that exact
+    file exists (a map name, with or without .npz), else the latest
+    customization calibrations/<subject>_<YYYYMMDD_HHMMSS>.npz saved by
+    customize_bomi.py. Returns the exact-name path (not existing) if neither
+    is there, so callers can report it."""
+    exact = _resolve_calib_path(_strip_npz(subject))
+    if os.path.exists(exact):
+        return exact
+    customs = _custom_maps_of(subject)
+    if customs:
+        return _resolve_calib_path(customs[-1])
+    return exact
+
+
+def _list_saved_maps() -> list:
+    """Names of the .npz maps found in CALIB_DIR (for error messages)."""
+    if not os.path.isdir(CALIB_DIR):
+        return []
+    return sorted(f[:-4] for f in os.listdir(CALIB_DIR) if f.endswith(".npz"))
+
+
+def save_calib_samples(path: str, samples: list) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    np.save(path, np.asarray(samples, dtype=np.float64))
+
+
+def load_calib_samples(path: str) -> np.ndarray:
+    return np.load(path)
 
 
 # Shared window names, so the standalone calibrate/customize/load tools show
@@ -401,12 +472,26 @@ class CursorFilter:
 # as used for dr_mode="ae" in main_reaching_FullHand_MOD_ae.py's train_ae():
 # Input -> Dense(32, tanh) -> Dense(32, tanh) -> Dense(2, linear) [latent/cursor]
 #       -> Dense(32, tanh) -> Dense(32, tanh) -> Dense(n_features, linear) [reconstruction]
-AE_N_STEPS = 3001      # training epochs (n_steps)
+AE_N_STEPS = 3001      # training epochs (n_steps), full-batch
 AE_LR = 0.02           # Adam learning rate
 AE_HIDDEN_UNITS = 32   # nh1 = nh2
 AE_ACTIVATION = "tanh"
 AE_SEED = 20
 AE_LATENT_DIM = 2      # cu: 2 code units -> (crs_x, crs_y)
+AE_TEST_SPLIT = 0.2    # 80/20 train/test split of the shuffled calibration samples
+
+
+def compute_vaf(x: np.ndarray, x_rec: np.ndarray) -> float:
+    """Variance accounted for (%) by the reconstruction, both zero-meaned."""
+    x_zm = x - x.mean(axis=0)
+    x_rec_zm = x_rec - x_rec.mean(axis=0)
+    return float(100.0 * (1.0 - np.sum((x_zm - x_rec_zm) ** 2) / np.sum(x_zm ** 2)))
+
+
+def compute_latent_variance(latent: np.ndarray) -> list:
+    """Share (%) of the latent variance carried by each code unit."""
+    var = np.sum((latent - latent.mean(axis=0)) ** 2, axis=0)
+    return [float(v) for v in 100.0 * var / var.sum()]
 
 
 class BoMIMap:
@@ -435,16 +520,27 @@ class BoMIMap:
         self._w3 = self._b3 = None  # encoder layer 3 (Dense, linear) -> latent/cursor
         self._A = np.eye(2)     # latent -> screen affine map (starts diagonal = plain scale)
         self._b = np.zeros(2)
+        self.metrics = {}       # training report of fit() (VAF, latent variance, sample counts)
         self.fitted = False
 
-    def fit(self, samples: list) -> None:
+    def fit(self, samples, test_split: float = AE_TEST_SPLIT) -> dict:
+        """Train the autoencoder on the calibration samples the way markerlessBoMI's
+        train_ae does: drop all-zero rows, shuffle, hold out test_split for
+        testing, train full-batch on the rest, then scale the training latent
+        codes onto the screen. Returns (and stores in self.metrics) VAF and
+        latent-variance share on train and test."""
         X = np.array(samples, dtype=np.float32)
+        X = X[np.any(X != 0, axis=1)]  # frames recorded before the first detection
         n_features = X.shape[1]
 
         tf.keras.backend.clear_session()
         np.random.seed(AE_SEED)
         tf.random.set_seed(AE_SEED)
         initializer = tf.keras.initializers.GlorotNormal(seed=AE_SEED)
+
+        np.random.shuffle(X)
+        split = int(round(len(X) * (1.0 - test_split)))
+        train_x, test_x = X[:split], X[split:]
 
         inputs = Input(shape=(n_features,))
         hidden1 = Dense(AE_HIDDEN_UNITS, activation=AE_ACTIVATION, kernel_initializer=initializer)(inputs)
@@ -458,9 +554,12 @@ class BoMIMap:
         autoencoder = Model(inputs=inputs, outputs=predictions)
         autoencoder.compile(loss="mse", optimizer=Adam(learning_rate=AE_LR))
 
-        print(f"Training autoencoder BoMI map ({AE_N_STEPS} epochs)...")
-        autoencoder.fit(x=X, y=X, epochs=AE_N_STEPS, verbose=0, batch_size=len(X), shuffle=False)
-        print("Autoencoder training done.")
+        print(f"Training autoencoder BoMI map on {len(train_x)} samples "
+              f"({len(test_x)} held out, {AE_N_STEPS} epochs)...")
+        t0 = time.time()
+        autoencoder.fit(x=train_x, y=train_x, epochs=AE_N_STEPS, verbose=0,
+                        batch_size=len(train_x), shuffle=False)
+        print(f"Autoencoder training done in {time.time() - t0:.0f}s.")
 
         # Keep only the encoder half (first 3 Dense layers) for standalone inference,
         # same as train_ae() only persisting weights1/2/3 + biases1/2/3.
@@ -469,7 +568,7 @@ class BoMIMap:
         self._w2, self._b2 = dense_layers[1].get_weights()
         self._w3, self._b3 = dense_layers[2].get_weights()
 
-        train_cu = encoder.predict(X, verbose=0)
+        train_cu = encoder.predict(train_x, verbose=0)
 
         extent = np.ptp(train_cu, axis=0)
         extent = np.where(extent > 1e-6, extent, 1.0)
@@ -480,6 +579,30 @@ class BoMIMap:
         self._A = np.diag(scale)
         self._b = screen / 2.0 - (train_cu * scale).mean(axis=0)
         self.fitted = True
+
+        # Training report, as train_ae prints/saves it (vaf.txt, latent_variance.txt)
+        self.metrics = {
+            "n_train": int(len(train_x)),
+            "n_test": int(len(test_x)),
+            "vaf_train": compute_vaf(train_x, autoencoder.predict(train_x, verbose=0)),
+            "cu_train": compute_latent_variance(train_cu),
+        }
+        if len(test_x) > 1:
+            test_cu = encoder.predict(test_x, verbose=0)
+            self.metrics["vaf_test"] = compute_vaf(test_x, autoencoder.predict(test_x, verbose=0))
+            self.metrics["cu_test"] = compute_latent_variance(test_cu)
+        self.print_metrics()
+        return self.metrics
+
+    def print_metrics(self) -> None:
+        m = self.metrics
+        if not m:
+            return
+        print(f"  samples: {m['n_train']} train / {m['n_test']} test")
+        print(f"  VAF: train {m['vaf_train']:.2f}%" + (f", test {m['vaf_test']:.2f}%" if "vaf_test" in m else ""))
+        cu = " / ".join(f"{v:.1f}%" for v in m["cu_train"])
+        print(f"  latent variance (CU x / CU y): train {cu}"
+              + (", test " + " / ".join(f"{v:.1f}%" for v in m["cu_test"]) if "cu_test" in m else ""))
 
     def transform(self, features: np.ndarray) -> tuple:
         """
@@ -526,6 +649,7 @@ class BoMIMap:
             w3=self._w3, b3=self._b3,
             A=self._A,
             b=self._b,
+            metrics=json.dumps(self.metrics),
         )
 
     def load(self, path: str) -> None:
@@ -533,13 +657,14 @@ class BoMIMap:
         if "w1" not in data:
             raise ValueError(
                 f"'{path}' is not an autoencoder calibration (keys: {list(data.keys())}). "
-                "It was probably saved by the old PCA map: run again with --calibrate."
+                "It was probably saved by the old PCA map: rebuild it with calibrate_bomi.py."
             )
         self._w1, self._b1 = data["w1"], data["b1"]
         self._w2, self._b2 = data["w2"], data["b2"]
         self._w3, self._b3 = data["w3"], data["b3"]
         self._A = data["A"]
         self._b = data["b"]
+        self.metrics = json.loads(str(data["metrics"])) if "metrics" in data else {}
         self.fitted = True
 
 
@@ -684,14 +809,22 @@ def update_bomi_cursor(cap, landmarker, bomi_map: BoMIMap, cursor_filter: Cursor
 
 
 # --- Phases ---
-def _calibration_phase(cap, landmarker) -> list:
-    MIN_SAMPLES = 30
+def _calibration_phase(cap, landmarker, duration_s: float = CALIB_DURATION_S,
+                       window_name: str = "BoMI - Calibration") -> list:
+    """Continuous calibration, as in markerlessBoMI's compute_calibration: once
+    started (SPACE), the hand features are recorded on every frame where the
+    hand is tracked until duration_s has elapsed, with the time remaining on
+    screen. No sample is picked by hand: the participant just keeps moving the
+    hand through the whole workspace. Q/Esc/closing the window quits.
+    Returns the list of 42-element samples."""
     samples = []
 
     print("\n=== CALIBRATION ===")
-    print("Move your hand through all positions you intend to use.")
-    print("SPACE = record sample   |   ENTER = finish (need >= 30)   |   Q = quit")
+    print(f"Continuous recording for {duration_s:.0f}s: keep moving your hand through all the "
+          "positions you intend to use, at the speed you will use them.")
+    print("SPACE = start   |   Q = quit")
 
+    start_time = None
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -701,27 +834,34 @@ def _calibration_phase(cap, landmarker) -> list:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         results = landmarker.detect_for_video(mp_image, int(time.time() * 1000))
 
-        if results.hand_landmarks:
-            _draw_hand_landmarks(frame, results.hand_landmarks[0])
+        hand = results.hand_landmarks[0] if results.hand_landmarks else None
+        if hand is not None:
+            _draw_hand_landmarks(frame, hand)
 
-        label = f"Samples: {len(samples)}/{MIN_SAMPLES}  SPACE=add  ENTER=done  Q=quit"
-        cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
-        window_name = "BoMI - Calibration"
+        now = time.time()
+        if start_time is None:
+            label = f"Get ready: SPACE starts {duration_s:.0f}s of recording   Q=quit"
+            color = (0, 255, 255)
+        else:
+            if hand is not None:
+                mirror_x = results.handedness[0][0].category_name == "Right"
+                samples.append(_extract_hand_features(hand, mirror_x))
+            remaining = duration_s - (now - start_time)
+            if remaining <= 0:
+                print(f"  Calibration done ({len(samples)} samples in {duration_s:.0f}s)")
+                break
+            label = f"Calibration time: {remaining:4.0f}s   samples: {len(samples)}"
+            color = (0, 255, 0) if hand is not None else (0, 0, 255)
+            if hand is None:
+                cv2.putText(frame, "no hand detected", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+
+        cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
         cv2.imshow(window_name, frame)
         key = cv2.waitKey(1) & 0xFF
 
-        if key == ord(' ') and results.hand_landmarks:
-            mirror_x = results.handedness[0][0].category_name == "Right"
-            samples.append(_extract_hand_features(results.hand_landmarks[0], mirror_x))
-            print(f"  Sample {len(samples)} recorded")
-
-        elif key == 13:  # ENTER
-            if len(samples) >= MIN_SAMPLES:
-                print(f"  Calibration done ({len(samples)} samples)")
-                break
-            else:
-                print(f"  Need at least {MIN_SAMPLES} samples (have {len(samples)})")
-
+        if key == ord(' ') and start_time is None:
+            start_time = time.time()
+            print("  Recording...")
         elif _quit_requested(key, window_name):
             print("Aborted.")
             sys.exit(0)
@@ -878,11 +1018,12 @@ def main() -> None:
                         help=f"IP address of the Reachy robot (default: {DEFAULT_HOST})")
     parser.add_argument("--port", type=int, default=5051)
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
-    parser.add_argument("--calibrate", action="store_true",
-                        help="Run calibration and save it. Default: load saved calibration.")
-    parser.add_argument("--calib", default=DEFAULT_CALIB_FILE,
-                        help="Calibration file. A bare filename is stored in the "
-                             f"calibrations/ folder inside the package (default: {DEFAULT_CALIB_FILE}).")
+    parser.add_argument("--subject", default="S000",
+                        help="Participant id or map name: calibrations/<subject>.npz if it exists, else the "
+                             "latest calibrations/<subject>_<date>_<time>.npz from customize_bomi.py (default: S000)")
+    parser.add_argument("--calib", default=None,
+                        help="Map to load (calibrations/<NAME>.npz) instead of the participant's "
+                             "map resolved from --subject")
     parser.add_argument("--model", default=DEFAULT_MODEL_PATH,
                         help="Path to the MediaPipe hand_landmarker.task model "
                              f"(default: {DEFAULT_MODEL_PATH}).")
@@ -908,13 +1049,19 @@ def main() -> None:
                              "(default: only the cursor map is shown).")
     args = parser.parse_args()
 
-    calib_path = _resolve_calib_path(args.calib)
-
-    # Fail early if we are supposed to load but there is no calibration file
-    if not args.calibrate and not os.path.exists(calib_path):
-        print(f"[ERROR] No calibration file '{calib_path}' found.")
-        print("        Run once with --calibrate to create it, e.g.:")
-        print(f"        python3 socket_client.py {args.server_ip} --calibrate")
+    # The map is the participant's customization of the shared autoencoder
+    # (calibrate_bomi.py once, customize_bomi.py per participant), made
+    # beforehand: no calibration/training happens here
+    if args.calib:
+        calib_path = _resolve_calib_path(args.calib)
+    else:
+        calib_path = _resolve_subject_map_path(args.subject)
+    if not os.path.exists(calib_path):
+        print(f"[ERROR] No calibration map for '{args.subject}' found (neither {os.path.basename(calib_path)} "
+              f"nor {_strip_npz(args.subject)}_<date>_<time>.npz): run customize_bomi.py {args.subject} first.")
+        available = _list_saved_maps()
+        if available:
+            print("        Available: " + ", ".join(available))
         sys.exit(1)
 
     # Fail early if the hand-landmarker model is missing
@@ -955,15 +1102,9 @@ def main() -> None:
         landmarker = hand_landmarker.HandLandmarker.create_from_options(landmarker_options)
 
         bomi_map = BoMIMap()
-        if args.calibrate:
-            samples = _calibration_phase(cap, landmarker)
-            bomi_map.fit(samples)
-            os.makedirs(os.path.dirname(calib_path) or ".", exist_ok=True)
-            bomi_map.save(calib_path)
-            print(f"Autoencoder map fitted and saved to {calib_path}")
-        else:
-            bomi_map.load(calib_path)
-            print(f"Loaded calibration from {calib_path} (no calibration phase)")
+        bomi_map.load(calib_path)
+        print(f"Loaded calibration map from {calib_path}")
+        bomi_map.print_metrics()
 
         cursor_filter = CursorFilter()
         crs_x, crs_y = _cursor_preview_phase(cap, landmarker, bomi_map, cursor_filter,

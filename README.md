@@ -25,7 +25,7 @@ The system is split in two sides, **operator** and **robot**. They can be two ma
                                               └─ ros2 bag record
 ```
 
-1. **`socket_client.py`** runs on the **operator PC** (not on the robot). It needs a webcam and the MediaPipe stack. Optionally, it first sends a scenario request (`scenario:<name> rviz:<true|false> record:<true|false>`) and waits for the simulation to come up; it then calibrates an autoencoder hand-to-cursor map and continuously sends velocity strings such as `lin_vel:0.500 ang_vel:-0.300` over TCP at 20Hz.
+1. **`socket_client.py`** runs on the **operator PC** (not on the robot). It needs a webcam and the MediaPipe stack. Optionally, it first sends a scenario request (`scenario:<name> rviz:<true|false> record:<true|false>`) and waits for the simulation to come up; it then loads the participant's autoencoder hand-to-cursor map (built beforehand with the calibration tools below) and continuously sends velocity strings such as `lin_vel:0.500 ang_vel:-0.300` over TCP at 20Hz.
 2. **`socket_server.py`** (ROS 2 node, started once via `bomi_bridge.launch.py` and left running) opens the TCP server and decodes incoming messages. Velocity/state messages are published on `socket_server/linear_vel`, `socket_server/angular_vel`, `socket_server/base_state`. A `scenario:...` message instead makes it run `ros2 launch reachy_bomi bomi_control.launch.py` itself (terminating any scenario it had previously launched).
 3. **`cmd_vel_publisher.py`** (ROS 2 node, started by `bomi_control.launch.py`) subscribes to those topics and, while the base is in velocity mode (`base_state == 1.0`), publishes a `geometry_msgs/Twist` on `/cmd_vel`.
 4. **`bomi_control.launch.py`** starts the **Reachy simulation in Gazebo** (via `reachy_bringup`) with the world chosen by the selected scenario, `cmd_vel_publisher`, and (optionally) records a **ROS 2 bag** of the run. It can also be launched manually on the robot PC instead of being triggered remotely — see [Usage](#usage).
@@ -124,22 +124,14 @@ Launch arguments:
 ### 2. On the operator PC — run the hand-tracking client
 
 ```bash
-# First time (or to recalibrate): run the calibration phase and save it
-python3 socket_client.py <robot_ip> --calibrate [--calib bomi_calib.npz] [--model scripts/hand_landmarker.task] \
-    [--port 5051] [--cam 0] \
-    [--scenario familiarization] [--start-rviz false] [--record true] [--sim-wait 10] [--sim-url URL] [--show-cam]
-
-# Next times: load the saved calibration, skip straight to control
-python3 socket_client.py <robot_ip> [--model scripts/hand_landmarker.task] [--port 5051] [--cam 0] \
+# Beforehand, without the robot: calibrate_bomi.py once, customize_bomi.py per participant (see Calibration maps)
+python3 socket_client.py <robot_ip> --subject S001 [--calib NAME] [--model scripts/hand_landmarker.task] [--port 5051] [--cam 0] \
     [--scenario familiarization] [--start-rviz false] [--record true] [--sim-wait 10] [--sim-url URL] [--show-cam]
 ```
 
-`<robot_ip>` is optional if you've set `DEFAULT_HOST` in `socket_client.py` to your robot's IP; otherwise pass it explicitly. If `--scenario` is given, the client sends `scenario:<name> rviz:<start_rviz> record:<record>` to the bridge right after connecting, opens the simulation view (`--sim-url`, by default the noVNC page served by the Reachy container on `http://localhost:6080`) in the default browser, waits `--sim-wait` seconds for the simulation to come up, and only then starts calibration/control. If `--scenario` is omitted, no scenario request is sent (useful when a scenario is already running, e.g. launched manually per step 1).
+`<robot_ip>` is optional if you've set `DEFAULT_HOST` in `socket_client.py` to your robot's IP; otherwise pass it explicitly. If `--scenario` is given, the client sends `scenario:<name> rviz:<start_rviz> record:<record>` to the bridge right after connecting, opens the simulation view (`--sim-url`, by default the noVNC page served by the Reachy container on `http://localhost:6080`) in the default browser, waits `--sim-wait` seconds for the simulation to come up, and only then starts the preview/control. If `--scenario` is omitted, no scenario request is sent (useful when a scenario is already running, e.g. launched manually per step 1).
 
-`--calibrate` is **opt-in**: without it, `socket_client.py` skips Phase 1 entirely and loads the saved calibration file (`--calib`, a bare filename is stored in the package's `calibrations/` folder; default `bomi_calib.npz`) — it fails immediately if that file doesn't exist yet. Pass `--calibrate` the first time, or whenever you want to redo it.
-
-**Phase 1 — Calibration** (only with `--calibrate`): move your hand through all the positions you intend to use.
-`SPACE` records a sample, `ENTER` finishes (minimum 30 samples), `Q`/`Esc`/closing the window quits.
+**Phase 1 — Map loading:** no calibration happens in the client. The participant's map `calibrations/<subject>_<date>_<time>.npz` is made beforehand with `customize_bomi.py SUBJECT` (see [Calibration maps](#calibration-maps-operator-pc-no-robot-needed)) and picked up from `--subject` (the latest one for that id; if `calibrations/<subject>.npz` itself exists, e.g. `--subject shared` or a full map name with or without `.npz`, that exact file is loaded instead); `--calib NAME` loads any other saved map. A missing map fails fast, before anything else, listing the maps actually found.
 
 **Phase 2 — Cursor preview:** the cursor map is shown but nothing is sent to the robot, so you can get a feel for the cursor. Hold it in the centre region (5) for 5 s to start Control.
 
@@ -154,17 +146,23 @@ The control area is a 3×3 grid with a dead zone in the centre:
                 corners (1,3,7,9)   → linear + angular
 ```
 
-### Calibration tools (operator PC, no robot needed)
+### Calibration maps (operator PC, no robot needed)
 
-Besides `--calibrate` in the client, three standalone tools in `reachy_bomi/` manage calibrations without connecting to anything (same webcam/MediaPipe chain, same `calibrations/` folder; names can be given without `.npz`):
+The same procedure markerlessBoMI was used with: **one** autoencoder map, trained once on a single 90 s recording of the experimenter's hand, and for each participant only the customization (rotation / gain / offset). The tools live in `reachy_bomi/`, connect to nothing (same webcam/MediaPipe chain) and share the `calibrations/` folder; names can be given without `.npz`.
 
 ```bash
-python3 calibrate_bomi.py                 # calibrate, preview the cursor, S = save under a name
-python3 customize_bomi.py <name>          # rotate / flip / scale / offset a saved map live (fullscreen), S = save as a new name
-python3 load_bomi.py <name>               # try a saved calibration on the fullscreen cursor map (familiarisation)
+python3 calibrate_bomi.py [NAME] [--cam 0] [--model PATH] [--duration 90] [--recalibrate]   # once
+python3 customize_bomi.py [SUBJECT] [--base shared] [--cam 0] [--model PATH]                # per participant
+python3 load_bomi.py SUBJECT|NAME [--cam 0] [--model PATH]                                  # try a map fullscreen (familiarisation)
 ```
 
-The same calibration file is used by the client (`--calib <name>`), by the robot reaching task and by the cursor reaching tests.
+**Once — `calibrate_bomi.py`** (markerlessBoMI's "Calibration" + "Calculate BoMI map"):
+1. *Continuous calibration*: after `SPACE`, the hand is recorded continuously for `CALIB_DURATION_S` = 90 s (every frame with a tracked hand, no sample picking by hand: keep moving the hand through the whole workspace while the time remaining is shown), then the raw 42-feature samples are saved to `calibrations/shared_calib.npy`. If that file already exists the tool offers to reuse it and skip the recording (`--recalibrate` forces a new one) — that's how to retrain after changing the AE hyperparameters in `socket_client.py`.
+2. *Offline training*: the autoencoder (32-32-2-32-32, tanh, Adam 0.02, 3001 full-batch epochs) is trained on the saved samples the way markerlessBoMI's `train_ae` does — all-zero rows dropped, shuffle, 80/20 train/test split, screen scale/offset from the training latent codes — and the VAF and latent-variance share of each code unit on train and test are printed (and stored in the `.npz`, shown again when a map is loaded). Takes a couple of minutes on CPU. The map is saved to `calibrations/shared.npz` and previewed live (`Q` quits). A `NAME` other than `shared` saves under that name (then `customize_bomi.py --base NAME`).
+
+**Per participant — `customize_bomi.py SUBJECT`** (markerlessBoMI's "Customization"): loads `calibrations/shared.npz` and shows the fullscreen cursor map on the participant's hand; rotate/flip/scale/offset it (`[ ]`, `i`/`o`, `-`/`+`, `hjkl`, `r` resets) until the whole 3×3 grid is comfortably reachable and the rest position sits in region 5, then `S` asks the participant id (`SUBJECT` from the command line is the default, `-` cancels) and saves it as `calibrations/<id>_<YYYYMMDD_HHMMSS>.npz` — type `elisa`, get `elisa_20260916_155827.npz`. `socket_client.py`, `reaching_center_out.py`, `reaching_random.py` and `load_bomi.py`, given `SUBJECT`, load the **latest** of those, so a redone customization simply wins and the older ones stay on disk. The AE input being MediaPipe's normalized landmark coordinates, one hand's map transfers to another up to this affine customization (hand size/position → gain/offset, orientation → rotation). Retraining the shared map invalidates the existing customized maps (they were made on the old one) — `calibrate_bomi.py` warns about it.
+
+`load_bomi.py SUBJECT` shows a participant's latest map (or any map by name, e.g. `shared`) on the fullscreen cursor map, for familiarisation or to sanity-check it.
 
 ---
 
@@ -173,7 +171,7 @@ The same calibration file is used by the client (`--calib <name>`), by the robot
 The `reaching` scenario runs a **center-out reaching test** with the mobile base, ported from markerlessBoMI's reaching test: targets on circles around the robot's start pose (home), presented in a fixed pseudo-random order, alternating peripheral target -> home -> target -> home ... The distance grows every `targets_per_distance` targets: by default 10 targets at 2 m, 10 at 4 m and 10 at 6 m (30 targets, 60 reaches with the home returns). Everything is configured in [`config/reaching.yaml`](config/reaching.yaml) (angular positions, `circle_radii`, `targets_per_distance`, target radius, dwell time, trial timeout, session duration, target order).
 
 ```bash
-python3 socket_client.py <robot_ip> --calib <name> --scenario reaching
+python3 socket_client.py <robot_ip> --subject S001 --scenario reaching
 ```
 
 How it runs ([`reachy_bomi/reaching_task.py`](reachy_bomi/reaching_task.py), started by `bomi_control.launch.py` for scenarios with `task: reaching`):
@@ -206,8 +204,8 @@ Two fullscreen tests run markerlessBoMI's reaching test on screen: same hand -> 
 
 ```bash
 cd reachy_bomi
-python3 reaching_center_out.py --calib <name> --subject S001
-python3 reaching_random.py     --calib <name> --subject S001
+python3 reaching_center_out.py --subject S001 [--calib <name>]
+python3 reaching_random.py     --subject S001 [--calib <name>]
 ```
 
 - [`reaching_center_out.py`](reachy_bomi/reaching_center_out.py): centre -> target -> centre -> target ... (64 targets = each of the 8 circle targets 8 times, 64 home + 64 target = 128 goals). Results in `results_center_out/<subject>_center_out_{trials.csv,summary.json}`.
@@ -238,9 +236,9 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── reaching_center_out.py      # fullscreen cursor reaching test, center-out (no robot)
 │   ├── reaching_random.py          # fullscreen cursor reaching test, random sequence (no robot)
 │   ├── reaching_metrics.py         # per-trial kinematic metrics shared by the reaching tests
-│   ├── calibrate_bomi.py           # standalone tools: create / customize / try a calibration
-│   ├── customize_bomi.py
-│   ├── load_bomi.py
+│   ├── calibrate_bomi.py           # once: 90 s continuous calibration + offline AE training -> calibrations/shared.npz
+│   ├── customize_bomi.py           # per participant: rotate/flip/scale/offset the shared map -> calibrations/<SUBJECT>_<date>_<time>.npz
+│   ├── load_bomi.py                # try a participant's / any saved map on the fullscreen cursor map
 │   └── scenarios.py                # loads scenarios.yaml
 ├── config/
 │   ├── scenarios.yaml              # scenario definitions
@@ -255,7 +253,7 @@ reachy2_teleop_grasping_and_simulation/
 ├── scripts/
 │   ├── hand_landmarker.task        # MediaPipe model (tracked, see Requirements)
 │   └── container_tweaks.sh         # tweaks to re-apply inside the Reachy Docker container
-├── calibrations/                   # saved hand-to-cursor calibrations (folder tracked via .gitkeep, the .npz files are not)
+├── calibrations/                   # shared_calib.npy (raw samples), shared.npz (the AE map), <SUBJECT>_<date>_<time>.npz (per participant); folder tracked via .gitkeep, the files are not
 ├── resource/reachy_bomi            # ament resource marker
 ├── package.xml, setup.py, setup.cfg
 └── README.md

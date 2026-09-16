@@ -19,7 +19,7 @@ Results (a subject with previous sessions gets _1, _2, ... appended):
   results_random/<subject>_random_summary.json
 
 Usage:
-    python3 reaching_random.py --calib <name> --subject S001 [--cam 0]
+    python3 reaching_random.py --subject S001 [--calib <name>] [--cam 0]
 Keys: Q / ESC = abort (results so far are still saved).
 """
 

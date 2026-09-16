@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Standalone BoMI customization tool -- no robot connection needed.
-
-Loads a calibration previously saved with calibrate_bomi.py (or socket_client.py --calibrate), lets you rotate,
-flip and rescale the cursor map live, shown fullscreen (exactly like Naji's "Customization" step:
-rotation_custom/scale_custom/offset_custom composed on top of the base AE map),
-and saves the result as a brand new calibration -- the original file is never
-modified, so you can always go back to it.
+Step 2, once per participant (no robot needed): markerlessBoMI's
+"Customization". Loads the shared autoencoder map (calibrations/shared.npz,
+from calibrate_bomi.py), lets you rotate / flip / scale / offset it live on the
+participant's hand, shown fullscreen, and saves it as
+calibrations/<SUBJECT>_<YYYYMMDD_HHMMSS>.npz -- socket_client.py and the
+reaching tests, given --subject SUBJECT, load the latest of those. The shared
+map is untouched.
 
 Keys:
     [ / ]   rotate -5 / +5 degrees
@@ -14,16 +14,13 @@ Keys:
     - / +   scale down / up (both axes)
     h / l   nudge offset left / right
     k / j   nudge offset up / down
-    r       reset (discard all changes, reload the original map)
-    s       save as... (prompts for a new calibration name)
+    r       reset (discard all changes, reload the shared map)
+    s       save: asks the participant id (default: SUBJECT) and writes
+            calibrations/<id>_<date>_<time>.npz ('-' at the prompt cancels)
     q       quit without saving
 
 Usage:
-    python3 customize_bomi.py NAME [--cam INDEX] [--model PATH]
-
-    NAME is the calibration to load, e.g. "elisa" for calibrations/elisa.npz
-    (the .npz extension is optional). The customized map is saved under a
-    different name you choose when pressing 's'.
+    python3 customize_bomi.py [SUBJECT] [--base NAME] [--cam INDEX] [--model PATH]
 """
 
 import argparse
@@ -42,25 +39,33 @@ SCALE_STEP = 1.1     # multiplicative
 OFFSET_STEP_PX = 10.0
 
 HELP_TEXT = (
-    "[ ]=rotate  i/o=flip X/Y  -/+=scale  hjkl=offset  r=reset  s=save as...  q=quit"
+    "[ ]=rotate  i/o=flip X/Y  -/+=scale  hjkl=offset  r=reset  s=save  q=quit"
 )
 
 
-def _prompt_and_save(bomi_map: bomi.BoMIMap) -> bool:
-    """Returns True once the map is actually saved (False if the user cancels
-    with a blank name, so the caller keeps previewing)."""
-    name = input("Save customized calibration as (blank = cancel): ").strip()
-    if not name:
-        print("Cancelled.")
-        return False
-    path = bomi._resolve_calib_path(name)
+def _prompt_and_save(bomi_map: bomi.BoMIMap, subject: str) -> bool:
+    """Asks the participant id (default: subject, if given on the command line)
+    and saves the map as calibrations/<id>_<YYYYMMDD_HHMMSS>.npz, the file
+    "--subject <id>" resolves to everywhere. Returns True once saved (False if
+    the user cancels with '-', so the caller keeps previewing)."""
+    hint = f" [{subject}]" if subject else ""
+    while True:
+        name = input(f"Participant id to save the map for{hint} ('-' = cancel): ").strip()
+        if name == "-":
+            print("Cancelled.")
+            return False
+        name = name or subject
+        if name:
+            break
+        print("  Type a participant id (e.g. elisa or S001).")
+    path = bomi._resolve_calib_path(bomi._custom_map_name(name))
     os.makedirs(bomi.CALIB_DIR, exist_ok=True)
     bomi_map.save(path)
     print(f"Saved to {path}")
     return True
 
 
-def _customize_and_save(cap, landmarker, calib_path: str) -> None:
+def _customize_and_save(cap, landmarker, calib_path: str, subject: str) -> None:
     bomi_map = bomi.BoMIMap()
     bomi_map.load(calib_path)
 
@@ -105,7 +110,7 @@ def _customize_and_save(cap, landmarker, calib_path: str) -> None:
             bomi_map.load(calib_path)
             print("Reset to the original calibration.")
         elif key == ord('s'):
-            if _prompt_and_save(bomi_map):
+            if _prompt_and_save(bomi_map, subject):
                 return
         elif bomi._quit_requested(key, map_window):
             print("Closed without saving.")
@@ -116,20 +121,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("name", help="Calibration to load, e.g. 'elisa' for calibrations/elisa.npz")
+    parser.add_argument("subject", nargs="?", default=None,
+                        help="Participant id, e.g. elisa: the map is saved as calibrations/elisa_<date>_<time>.npz "
+                             "(can also be typed at the save prompt)")
+    parser.add_argument("--base", default=bomi.SHARED_MAP_NAME,
+                        help=f"Map to customize, calibrations/<NAME>.npz (default: {bomi.SHARED_MAP_NAME})")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--model", default=bomi.DEFAULT_MODEL_PATH,
                         help="Path to the MediaPipe hand_landmarker.task model.")
     cli_args = parser.parse_args()
 
-    calib_path = bomi._resolve_calib_path(cli_args.name)
+    calib_path = bomi._resolve_calib_path(cli_args.base)
     if not os.path.exists(calib_path):
-        print(f"[ERROR] No calibration file '{calib_path}' found.")
-        if os.path.isdir(bomi.CALIB_DIR):
-            available = [f for f in os.listdir(bomi.CALIB_DIR) if f.endswith(".npz")]
-            if available:
-                print("        Available: " + ", ".join(sorted(available)))
+        print(f"[ERROR] No map '{calib_path}' found: run calibrate_bomi.py first (or check --base).")
+        available = bomi._list_saved_maps()
+        if available:
+            print("        Available: " + ", ".join(available))
         sys.exit(1)
+    subject = bomi._strip_npz(cli_args.subject) if cli_args.subject else None
 
     if not os.path.exists(cli_args.model):
         print(f"[ERROR] MediaPipe model not found: '{cli_args.model}'")
@@ -155,7 +164,7 @@ def main() -> None:
         )
         landmarker = hand_landmarker.HandLandmarker.create_from_options(landmarker_options)
 
-        _customize_and_save(cap, landmarker, calib_path)
+        _customize_and_save(cap, landmarker, calib_path, subject)
     finally:
         if cap is not None:
             cap.release()
