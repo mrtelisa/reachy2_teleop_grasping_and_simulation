@@ -299,16 +299,16 @@ def apply_region_velocity_mask(region: int, lin_vel: float, ang_vel: float) -> t
 
 
 # --- Autoencoder forward map ---
-def _extract_hand_features(hand_landmarks, mirror_x: bool = False) -> np.ndarray:
+def _extract_hand_features(hand_landmarks) -> np.ndarray:
     """
-    Flatten all 21 hand landmarks (x, y) into a 42-element vector.
-    If mirror_x, x is mirrored (1 - x) so the right hand maps to the same
-    feature space as the left hand.
+    Flatten all 21 hand landmarks (x, y) into a 42-element vector. Left and
+    right hands are not told apart: the participant always uses the same hand
+    (the one the map was customized with).
 
     hand_landmarks is the list of NormalizedLandmark returned by MediaPipe
     Tasks (e.g. results.hand_landmarks[0]).
     """
-    coords = [[1.0 - lm.x if mirror_x else lm.x, lm.y] for lm in hand_landmarks]
+    coords = [[lm.x, lm.y] for lm in hand_landmarks]
     return np.array(coords).flatten()
 
 
@@ -802,8 +802,7 @@ def update_bomi_cursor(cap, landmarker, bomi_map: BoMIMap, cursor_filter: Cursor
 
     hl = results.hand_landmarks[0]
     _draw_hand_landmarks(frame, hl)
-    mirror_x = results.handedness[0][0].category_name == "Right"
-    crs_x, crs_y = bomi_map.transform(_extract_hand_features(hl, mirror_x))
+    crs_x, crs_y = bomi_map.transform(_extract_hand_features(hl))
     crs_x, crs_y = cursor_filter.update(crs_x, crs_y)
     return frame, crs_x, crs_y, True
 
@@ -844,8 +843,7 @@ def _calibration_phase(cap, landmarker, duration_s: float = CALIB_DURATION_S,
             color = (0, 255, 255)
         else:
             if hand is not None:
-                mirror_x = results.handedness[0][0].category_name == "Right"
-                samples.append(_extract_hand_features(hand, mirror_x))
+                samples.append(_extract_hand_features(hand))
             remaining = duration_s - (now - start_time)
             if remaining <= 0:
                 print(f"  Calibration done ({len(samples)} samples in {duration_s:.0f}s)")
@@ -969,8 +967,7 @@ def _control_phase(cap, landmarker, bomi_map: BoMIMap, robot: RobotSocket,
         if results.hand_landmarks:
             hl = results.hand_landmarks[0]
             _draw_hand_landmarks(frame, hl)
-            mirror_x = results.handedness[0][0].category_name == "Right"
-            crs_x, crs_y = bomi_map.transform(_extract_hand_features(hl, mirror_x))
+            crs_x, crs_y = bomi_map.transform(_extract_hand_features(hl))
             crs_x, crs_y = cursor_filter.update(crs_x, crs_y)
             region = check_region_cursor(crs_x, crs_y)
             lin_vel, ang_vel = compute_dynamic_vel_from_cursor(crs_x, crs_y)
