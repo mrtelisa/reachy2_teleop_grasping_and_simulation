@@ -230,6 +230,8 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
                     f"[{class_name}] {place_arm} couldn't execute a grasp after {MAX_GRASP_ATTEMPTS} attempts",
                 )
                 break
+            graphs.show_grasp_and_place_plan(geometry, plan, place_plan, target_point,
+                                             cell_size_m=reachy_selection.PLACE_GRID_CELL_SIZE_M)  # diagnostic plot
             if not _place_object(reachy, place_plan):
                 _abort_and_shutdown(reachy, mobile_base, f"[{class_name}] execute_place failed")
                 break
