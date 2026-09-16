@@ -278,26 +278,62 @@ def _draw_cursor_map(crs_x: float, crs_y: float, region: int, message: str,
     canvas = np.full((map_height, map_width, 3), 30, dtype=np.uint8)
     sx = map_width / BASE_WIDTH
     sy = map_height / BASE_HEIGHT
+    k = map_height / MAP_WINDOW_SIZE[1]   # lines, dot and text grow with the map (1 = default size)
 
     x1, x2 = int(847 * sx), int(1697 * sx)
     y1, y2 = int(497 * sy), int(997 * sy)
     for x in (x1, x2):
-        cv2.line(canvas, (x, 0), (x, map_height), (90, 90, 90), 1)
+        cv2.line(canvas, (x, 0), (x, map_height), (90, 90, 90), max(1, round(k)))
     for y in (y1, y2):
-        cv2.line(canvas, (0, y), (map_width, y), (90, 90, 90), 1)
+        cv2.line(canvas, (0, y), (map_width, y), (90, 90, 90), max(1, round(k)))
 
     cx, cy = int(crs_x * sx), int(crs_y * sy)
-    cv2.circle(canvas, (cx, cy), 8, (0, 0, 255), -1)
+    cv2.circle(canvas, (cx, cy), max(1, round(8 * k)), (0, 0, 255), -1)
 
+    kt = min(k, 2.0)   # text grows less than the map, so the long help line still fits
+    thick = max(1, round(2 * kt))
     cv2.putText(canvas, f"region={region}  cursor=({crs_x:.0f},{crs_y:.0f})",
-                (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                (round(10 * kt), round(25 * kt)), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * kt, (255, 255, 255), thick)
     cv2.putText(canvas, f"-> PC2: {message}",
-                (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                (round(10 * kt), round(50 * kt)), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * kt, (0, 255, 255), thick)
     if status:
         # Task feedback from the robot side (e.g. "target 4/32"), bottom-left in blue
-        cv2.putText(canvas, status, (10, map_height - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 140, 0), 2)
+        cv2.putText(canvas, status, (round(10 * kt), map_height - round(12 * kt)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7 * kt, (255, 140, 0), thick)
     return canvas
+
+
+def open_fullscreen_window(window_name: str) -> tuple:
+    """Create window_name in fullscreen and return its (width, height) in
+    pixels. Used by the standalone tools (load_bomi.py, customize_bomi.py) to
+    show the cursor map on the whole screen."""
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    # Show a frame BEFORE asking for fullscreen: some OpenCV builds (e.g. the
+    # opencv-python 4.13 wheel, Qt backend) ignore the property on a window
+    # that has not been mapped yet and leave a small window.
+    cv2.imshow(window_name, np.zeros((MAP_WINDOW_SIZE[1], MAP_WINDOW_SIZE[0], 3), dtype=np.uint8))
+    cv2.waitKey(100)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.waitKey(300)   # let the window manager apply it before reading the size
+    _, _, w, h = cv2.getWindowImageRect(window_name)
+    if cv2.getWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN) != cv2.WINDOW_FULLSCREEN:
+        print(f"[WARNING] fullscreen not applied by this OpenCV/desktop, window is {w}x{h}")
+    if w <= 0 or h <= 0:
+        w, h = MAP_WINDOW_SIZE
+    return w, h
+
+
+def draw_fullscreen_cursor_map(screen_w: int, screen_h: int, crs_x: float, crs_y: float,
+                               region: int, message: str, status: str = ""):
+    """_draw_cursor_map() scaled to fill a screen_w x screen_h window: the
+    virtual screen keeps its aspect ratio (BASE_WIDTH x BASE_HEIGHT), as large
+    as possible and centred on a black frame."""
+    scale = min(screen_w / BASE_WIDTH, screen_h / BASE_HEIGHT)
+    map_w, map_h = max(1, int(BASE_WIDTH * scale)), max(1, int(BASE_HEIGHT * scale))
+    frame = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
+    ox, oy = (screen_w - map_w) // 2, (screen_h - map_h) // 2
+    frame[oy:oy + map_h, ox:ox + map_w] = _draw_cursor_map(crs_x, crs_y, region, message, map_w, map_h, status)
+    return frame
 
 
 _last_raise_time = 0.0

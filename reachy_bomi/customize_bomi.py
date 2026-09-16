@@ -3,7 +3,7 @@
 Standalone BoMI customization tool -- no robot connection needed.
 
 Loads a calibration previously saved with calibrate_bomi.py (or socket_client.py --calibrate), lets you rotate,
-flip and rescale the cursor map live (exactly like Naji's "Customization" step:
+flip and rescale the cursor map live, shown fullscreen (exactly like Naji's "Customization" step:
 rotation_custom/scale_custom/offset_custom composed on top of the base AE map),
 and saves the result as a brand new calibration -- the original file is never
 modified, so you can always go back to it.
@@ -11,7 +11,7 @@ modified, so you can always go back to it.
 Keys:
     [ / ]   rotate -5 / +5 degrees
     i / o   flip X axis / flip Y axis
-    - / =   scale down / up (both axes)
+    - / +   scale down / up (both axes)
     h / l   nudge offset left / right
     k / j   nudge offset up / down
     r       reset (discard all changes, reload the original map)
@@ -67,6 +67,7 @@ def _customize_and_save(cap, landmarker, calib_path: str) -> None:
     cursor_filter = bomi.CursorFilter()
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
     map_window = bomi.MAP_WINDOW_NAME
+    screen_w, screen_h = bomi.open_fullscreen_window(map_window)
 
     print(f"\n=== CUSTOMIZE '{calib_path}' (nothing is sent anywhere) ===")
     print(HELP_TEXT)
@@ -76,7 +77,7 @@ def _customize_and_save(cap, landmarker, calib_path: str) -> None:
             cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
         )
         region = bomi.check_region_cursor(crs_x, crs_y)
-        cv2.imshow(map_window, bomi._draw_cursor_map(crs_x, crs_y, region, HELP_TEXT))
+        cv2.imshow(map_window, bomi.draw_fullscreen_cursor_map(screen_w, screen_h, crs_x, crs_y, region, HELP_TEXT))
 
         key = cv2.waitKey(1) & 0xFF
 
@@ -90,7 +91,7 @@ def _customize_and_save(cap, landmarker, calib_path: str) -> None:
             bomi_map.customize(gain_y=-1.0)
         elif key == ord('-'):
             bomi_map.customize(gain_x=1.0 / SCALE_STEP, gain_y=1.0 / SCALE_STEP)
-        elif key == ord('='):
+        elif key == ord('+'):
             bomi_map.customize(gain_x=SCALE_STEP, gain_y=SCALE_STEP)
         elif key == ord('h'):
             bomi_map.customize(off_x=-OFFSET_STEP_PX)

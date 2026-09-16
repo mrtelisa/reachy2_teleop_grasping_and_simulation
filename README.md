@@ -160,8 +160,8 @@ Besides `--calibrate` in the client, three standalone tools in `reachy_bomi/` ma
 
 ```bash
 python3 calibrate_bomi.py                 # calibrate, preview the cursor, S = save under a name
-python3 customize_bomi.py <name>          # rotate / flip / scale / offset a saved map live, S = save as a new name
-python3 load_bomi.py <name>               # try a saved calibration on the cursor map
+python3 customize_bomi.py <name>          # rotate / flip / scale / offset a saved map live (fullscreen), S = save as a new name
+python3 load_bomi.py <name>               # try a saved calibration on the fullscreen cursor map (familiarisation)
 ```
 
 The same calibration file is used by the client (`--calib <name>`), by the robot reaching task and by the cursor reaching tests.
