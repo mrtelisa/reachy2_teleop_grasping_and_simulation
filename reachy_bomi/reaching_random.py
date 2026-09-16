@@ -3,8 +3,9 @@
 Fullscreen cursor reaching test, RANDOM sequence -- no robot, no socket.
 
 Same test as reaching_center_out.py (same hand -> cursor chain, canvas,
-target size, dwell, 10 s trial timeout, session timer, score, metrics and
-result files), but without the returns to the centre: after the first goal
+target size, dwell, no time limit -- the session ends only when every target
+has been reached -- session timer, score, metrics and result files), but
+without the returns to the centre: after the first goal
 at the centre (which starts the session timer), the 248 targets are shown one
 after the other, each somewhere on the screen.
 
@@ -18,7 +19,7 @@ Results (a subject with previous sessions gets _1, _2, ... appended):
   results_random/<subject>_random_summary.json
 
 Usage:
-    python3 reaching_random.py --calib <name> --subject S001 [--cam 0] [--max-minutes 4]
+    python3 reaching_random.py --calib <name> --subject S001 [--cam 0]
 Keys: Q / ESC = abort (results so far are still saved).
 """
 

@@ -18,14 +18,16 @@ are those of markerlessBoMI's main_reaching.py / reaching.py:
   The original's blocks/repetitions and "blind" trials are not reproduced.
 
 The session timer starts when the centre (first goal) is reached for the
-first time. The session ends when the sequence is over or after --max-minutes
-(default 4), whichever comes first; the window closes and the results are
-saved (a subject with previous sessions gets _1, _2, ... appended):
+first time. There is no time limit: the session ends only when every goal
+has been reached (or on Q/ESC); the time is recorded (session duration, per
+trial reach time, targets that took longer than TRIAL_OVER_TIME_S flagged as
+over_time), the window closes and the results are saved (a subject with
+previous sessions gets _1, _2, ... appended):
   results_center_out/<subject>_center_out_trials.csv     one row per trial (metrics)
   results_center_out/<subject>_center_out_summary.json   success rate, mean metrics, config
 
 Usage:
-    python3 reaching_center_out.py --calib <name> --subject S001 [--cam 0] [--max-minutes 4]
+    python3 reaching_center_out.py --calib <name> --subject S001 [--cam 0]
 (reaching_random.py runs the same test with targets in random order and no
 returns to the centre; it reuses everything in this file.)
 Keys: Q / ESC = abort (results so far are still saved).
@@ -77,8 +79,8 @@ assert N_TARGETS_CENTER_OUT <= N_TARGETS and N_TARGETS_CENTER_OUT % N_CIRCLE_TAR
 # --- Timing (markerlessBoMI reaching_functions.py) ---
 DWELL_S = 0.5           # cursor must stay inside the target this long (original: 250 ms)
 OUT_OF_TIME_S = 1.0      # state 1 ("out of time") after this, only affects the score
-TRIAL_TIMEOUT_S = 10.0   # a target not reached within this time is marked missed and skipped
-                         # (not applied to the very first centre goal, before the session starts)
+TRIAL_OVER_TIME_S = 10.0   # a target taking longer than this is flagged over_time in the results
+                           # (recorded only: the target stays until it is reached, nothing is skipped)
 # Score, as in the original: points by the time from target shown to entering
 # it (the dwell is not counted): < 2 s -> 4, < 3 s -> 3, < 4 s -> 2, else 1.
 SCORE_THRESHOLDS = ((2.0, 4), (3.0, 3), (4.0, 2))
@@ -186,12 +188,11 @@ def session_name(subject: str, sequence: str, results_dir: str) -> str:
 
 
 class ReachingCursorTest:
-    def __init__(self, subject: str, max_minutes: float, trials: list = None,
+    def __init__(self, subject: str, trials: list = None,
                  results_dir: str = RESULTS_DIR, sequence: str = "center_out") -> None:
         """trials/results_dir/sequence let another script (reaching_random.py)
         reuse the whole test with a different goal sequence and output folder."""
         self.subject = subject
-        self.max_seconds = max_minutes * 60.0
         self.trials = trials if trials is not None else build_trials()
         self.sequence = sequence
         self.results = []
@@ -244,13 +245,6 @@ class ReachingCursorTest:
                 self._next_trial(t)
         else:
             self.t_enter = None
-            if self.t_session0 is not None and t - self.t_shown >= TRIAL_TIMEOUT_S:
-                self._record_trial(t, success=False, reason="trial_timeout")
-                print(f"  trial {self.trial_i + 1}/{len(self.trials)} NOT reached ({TRIAL_TIMEOUT_S:.0f}s timeout)")
-                self._next_trial(t)
-
-        if self.t_session0 is not None and t - self.t_session0 >= self.max_seconds:
-            self.end_reason = "session_timeout"
 
     def t0(self) -> float:
         """Time origin for the logs: session start if it has begun, else the launch."""
@@ -270,7 +264,8 @@ class ReachingCursorTest:
         points = next((p for limit, p in SCORE_THRESHOLDS if reach_time < limit), 1)
         self.score += points
         self._record_trial(t, success=True, reason="reached", points=points)
-        print(f"  trial {self.trial_i + 1}/{len(self.trials)} reached in {reach_time:.2f}s (+{points}, score {self.score})")
+        over = "  (over time)" if reach_time > TRIAL_OVER_TIME_S else ""
+        print(f"  trial {self.trial_i + 1}/{len(self.trials)} reached in {reach_time:.2f}s (+{points}, score {self.score}){over}")
 
     def _record_trial(self, t: float, success: bool, reason: str, points: int = 0) -> None:
         metrics = compute_trial_metrics(
@@ -284,11 +279,14 @@ class ReachingCursorTest:
             "success": success, "end_reason": reason, "points": points, "score": self.score,
             "t_shown": self.t_shown - self.t0(), "t_end": t - self.t0(),
             "trial_duration": t - self.t_shown,
+            # Took longer than TRIAL_OVER_TIME_S to enter the target (still reached: nothing is skipped)
+            "over_time": success and (self.t_enter - self.t_shown) > TRIAL_OVER_TIME_S,
             **metrics,
         })
 
     def finish(self, t: float, reason: str = None) -> dict:
-        """Close the current (unfinished) trial as missed and write the results."""
+        """Close the current (unfinished) trial as missed (only possible on an
+        abort: there is no time limit) and write the results."""
         reason = reason or self.end_reason or "aborted"
         if self.trial is not None and self.trial_i < len(self.trials) and reason != "completed":
             self._record_trial(t, success=False, reason=reason)
@@ -315,9 +313,12 @@ class ReachingCursorTest:
             "timestamp": self.timestamp,
             "score": self.score,
             **summarize(self.results),
-            # Which targets were not reached: circle target index (-1 = centre),
-            # canvas position, how many times it was missed, in which trials and
-            # why (trial_timeout / session_timeout / aborted)
+            # Goals that took longer than TRIAL_OVER_TIME_S (reached anyway) and which trials
+            "n_over_time": sum(1 for r in self.results if r["over_time"]),
+            "over_time_trials": [r["trial"] for r in self.results if r["over_time"]],
+            # Which targets were not reached (only the goal in progress on an
+            # abort): circle target index (-1 = centre), canvas position, how
+            # many times it was missed, in which trials and why
             "missed_targets": list(missed.values()),
             # Misses per circle target (-1 = centre): how many times that target
             # was shown and how many of them were missed
@@ -328,7 +329,7 @@ class ReachingCursorTest:
             "config": {
                 "canvas": [CANVAS_W, CANVAS_H], "crs_radius": CRS_RADIUS, "tgt_radius": TGT_RADIUS,
                 "n_circle_targets": N_CIRCLE_TARGETS, "target_dist": TARGET_DIST, "target_seed": TARGET_SEED,
-                "dwell_s": DWELL_S, "max_seconds": self.max_seconds,
+                "dwell_s": DWELL_S, "trial_over_time_s": TRIAL_OVER_TIME_S, "max_seconds": None,
                 "n_targets": sum(1 for tr in self.trials if tr["kind"] == "target"),
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
@@ -391,9 +392,8 @@ class Screen:
         cv2.putText(img, str(test.score), (self.w - int(120 * self.scale), int(60 * self.scale)), font, 1.8 * self.scale, RED, 3)
         cv2.putText(img, f"target {min(test.trial_i + 1, len(test.trials))}/{len(test.trials)}",
                     (int(20 * self.scale), int(40 * self.scale)), font, fs, BLUE, 2)
-        elapsed = (t - test.t_session0) if test.t_session0 is not None else 0.0
-        remaining = max(0.0, test.max_seconds - elapsed)
-        cv2.putText(img, f"{int(remaining // 60)}:{int(remaining % 60):02d}",
+        elapsed = (t - test.t_session0) if test.t_session0 is not None else 0.0   # no limit, just shown
+        cv2.putText(img, f"{int(elapsed // 60)}:{int(elapsed % 60):02d}",
                     (int(20 * self.scale), self.h - int(20 * self.scale)), font, fs, WHITE, 2)
         cv2.imshow(self.window, img)
 
@@ -406,7 +406,6 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
     parser.add_argument("--subject", default="S000", help="Subject id used in the result file names (default: S000)")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--model", default=bomi.DEFAULT_MODEL_PATH, help="MediaPipe hand_landmarker.task model")
-    parser.add_argument("--max-minutes", type=float, default=4.0, help="Session hard stop (default: 4)")
     args = parser.parse_args()
 
     calib_path = bomi._resolve_calib_path(args.calib)
@@ -436,15 +435,14 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
         )
     )
 
-    test = ReachingCursorTest(args.subject, args.max_minutes, trials=build(),
-                              results_dir=results_dir, sequence=sequence)
+    test = ReachingCursorTest(args.subject, trials=build(), results_dir=results_dir, sequence=sequence)
     screen = Screen(title=f"BoMI - Reaching ({sequence})")
     cursor_filter = bomi.CursorFilter()
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas, same calibration as the robot
     sx, sy = CANVAS_W / bomi.BASE_WIDTH, CANVAS_H / bomi.BASE_HEIGHT
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
 
-    print(f"\n=== CURSOR REACHING ({sequence}) === {len(test.trials)} goals, max {args.max_minutes:.0f} min. Q = abort")
+    print(f"\n=== CURSOR REACHING ({sequence}) === {len(test.trials)} goals, no time limit. Q = abort")
     test.start(time.time())
     try:
         while not test.end_reason:
@@ -464,7 +462,7 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
         landmarker.close()
 
     print(f"\nSession over ({summary['end_reason']}): {summary['n_success']}/{summary['n_trials_done']} reached, "
-          f"score {summary['score']}, {summary['session_duration']:.0f}s")
+          f"score {summary['score']}, {summary['session_duration']:.0f}s, {summary['n_over_time']} over {TRIAL_OVER_TIME_S:.0f}s")
     if summary["missed_targets"]:
         print("Missed targets:")
         for m in summary["missed_targets"]:
