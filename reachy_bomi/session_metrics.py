@@ -90,7 +90,7 @@ class SessionMetrics:
                  dwell_seconds: float = 0.0, results_dir: str = RESULTS_DIR) -> None:
         self.subject = subject
         self.optimal_path_m = optimal_path_m
-        self.dwell_seconds = dwell_seconds
+        self.dwell_seconds = dwell_seconds   # default duration of a dwell (dwell() can override it)
         os.makedirs(results_dir, exist_ok=True)
         base = os.path.join(results_dir, _session_name(subject, results_dir))
         self.path_json = base + "_session.json"
@@ -112,6 +112,7 @@ class SessionMetrics:
         self._last_region_tick = None
         self.n_dwell = 0
         self.n_dwell_declined = 0
+        self.dwell_time = 0.0   # [s], sum of the durations of the completed dwells (removed from region 5)
         self.saved = False
 
     # --- events ---
@@ -132,11 +133,14 @@ class SessionMetrics:
     def object_moved(self, name: str) -> None:
         self.objects_moved.append(name)
 
-    def dwell(self, accepted) -> None:
+    def dwell(self, accepted, seconds: float = None) -> None:
         """A dwell in region 5 completed while driving. accepted: True = it
         changed state (pre-grasp pose / object selection / back to selection),
-        False = the user answered No and kept driving, None = quit."""
+        False = the user answered No and kept driving, None = quit.
+        seconds: how long that dwell was (default: dwell_seconds), since the
+        Control dwells (10 s) and the repositioning one (3 s) differ."""
         self.n_dwell += 1
+        self.dwell_time += self.dwell_seconds if seconds is None else seconds
         if accepted is False:
             self.n_dwell_declined += 1
 
@@ -184,7 +188,7 @@ class SessionMetrics:
     def region_shares(self) -> tuple:
         """(seconds per region after removing the dwells from region 5, percent per region)."""
         secs = dict(self.region_time)
-        removed = min(secs[5], self.dwell_seconds * self.n_dwell)
+        removed = min(secs[5], self.dwell_time)
         secs[5] -= removed
         total = sum(secs.values())
         pct = {f"region{r}": (100.0 * secs[r] / total if total > 0 else 0.0) for r in REGIONS}

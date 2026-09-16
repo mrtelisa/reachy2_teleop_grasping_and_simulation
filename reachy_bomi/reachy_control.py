@@ -595,7 +595,7 @@ def repositioning_navigation(cap, landmarker, bomi_map, cursor_filter, crs_x, cr
 
             if center_progress >= 1.0:
                 if _metrics is not None:
-                    _metrics.dwell(True)   # back to object selection
+                    _metrics.dwell(True, seconds=SELECTION_HOLD_SECONDS)   # back to object selection (3 s, not the 10 s Control dwell)
                 mobile_base.set_goal_speed(vx=0, vy=0, vtheta=0)
                 mobile_base.send_speed_command()
                 safety.destroy_window(map_window)
