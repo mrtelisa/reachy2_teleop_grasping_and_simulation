@@ -128,6 +128,7 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
     """Object selection / grasp loop for one object at a time: capture ->
     hover-select -> confirm -> pick a place point -> confirm -> grasp -> place,
     then "pick another object?" (Yes: fresh capture and loop, No: _finish_session).
+    An object no arm can grasp asks the same question ("object unreachable").
     Repositioning can be requested from the selection screen. Quitting anywhere
     else just ends the run; main()'s finally block handles the shutdown."""
     global _grasp_phase_entered
@@ -187,7 +188,28 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
             if not grasp_plans:
                 print(f"[{class_name}] no feasible grasp (too wide for the gripper, "
                       "out of reach, or its pose couldn't be estimated)")
-                break
+                want_another, crs_x, crs_y = reachy_selection.confirm_unreachable_object_bomi(
+                    cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
+                )
+                if want_another is None:
+                    break
+                if not want_another:
+                    if _metrics is not None:
+                        _metrics.end_test("finished")
+                    _finish_session(reachy, mobile_base)
+                    break
+                # Yes: back to object selection on a fresh capture, base on again for repositioning
+                mobile_base.turn_on()
+                make_window_fullscreen(reachy_detection.CAM_WINDOW_NAME)
+                captured = reachy_detection.capture_and_detect(
+                    depth_cam, model, confidence, reachy_selection.presentable_filter(reachy),
+                )
+                if captured is None:
+                    if _metrics is not None:
+                        _metrics.end_test("finished")
+                    _finish_session(reachy, mobile_base)
+                    break
+                continue
 
             #graphs.show_grasp_plan(geometry, next(iter(grasp_plans.values())))  # diagnostic plot
             target_point, place_arm, crs_x, crs_y = _resolve_and_confirm_place_point(

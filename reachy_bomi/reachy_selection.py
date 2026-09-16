@@ -490,6 +490,16 @@ def confirm_place_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y):
     )
 
 
+def confirm_unreachable_object_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y):
+    """Yes/No dwell dialog asked when no arm can grasp the selected object: Yes
+    loops back into object selection on a fresh capture (Repositioning still
+    available there), No (or quitting) starts the end-of-session wind-down."""
+    return confirm_bomi(
+        cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
+        lines=["Sorry... object unreachable!", "Do you want to select another one?"],
+    )
+
+
 def confirm_new_object_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y):
     """Yes/No dwell dialog asked right after a successful placement: Yes loops
     back into object selection on a fresh capture, No (or quitting) starts the
