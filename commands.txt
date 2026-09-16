@@ -1,0 +1,12 @@
+IMPORTANT COMMANDS
+1. Venv activation: source ~/venvs/mediapipe/bin/activate
+2. In the container: ros2 launch reachy_bomi bomi_bridge.launch.py
+3. Locally for familiarization: python3 socket_client.py 172.17.0.2 --scenario familiarization --calib <calib_name>
+4. Locally for reachy reaching: python3 socket_client.py 172.17.0.2 --scenario reaching --calib <calib_name>
+5. Locally for center-out: python3 reaching_center_out.py --calib <calib_name>
+6. Locally for random: python3 reaching_random.py --calib <calib_name>
+
+CALIBRATION
+1. Creation: python3 calibrate_bomi.py   -> then save
+2. Customization: python3 customize_bomi.py <calib_name>
+3. Try bomi: python3 load_bomi.py <calib_name>
