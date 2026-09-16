@@ -8,9 +8,10 @@ result files), but without the returns to the centre: after the first goal
 at the centre (which starts the session timer), the 248 targets are shown one
 after the other, each somewhere on the screen.
 
-The target positions are the same 248 as in the center-out test (seeded
-random point in each cell of a 6x3 grid, every cell before any repeat), in
-the same order: fixed, identical for every participant and every launch.
+The target positions are the 248 of config/cursor_targets.csv (the 8 circle
+targets of the center-out test in seeded random order, every target before
+any repeat; the center-out test only uses the first 64), in the same order:
+fixed, identical for every participant and every launch.
 
 Results (a subject with previous sessions gets _1, _2, ... appended):
   results_random/<subject>_random_trials.csv
@@ -29,9 +30,9 @@ RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "re
 
 
 def build_trials() -> list:
-    """One goal at the centre, then every target of the center-out sequence
-    in the same order, with no return to the centre in between."""
-    center_out = base.build_trials()
+    """One goal at the centre, then all the N_TARGETS (248) targets of the
+    frozen sequence in the same order, with no return to the centre in between."""
+    center_out = base.build_trials(base.N_TARGETS)
     home = next(t for t in center_out if t["kind"] == "home")
     targets = [t for t in center_out if t["kind"] == "target"]
     return [home] + targets

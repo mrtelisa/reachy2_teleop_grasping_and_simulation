@@ -8,12 +8,13 @@ participant has to bring the cursor onto targets. Geometry and trial sequence
 are those of markerlessBoMI's main_reaching.py / reaching.py:
 
   virtual canvas 1200 x 650 (scaled to the whole screen, aspect preserved),
-  home at the centre, targets spread over the whole canvas (seeded random
-  point in each cell of a 6x3 grid, all cells before any repeat; the 248
+  home at the centre, 8 targets every 45 deg on a 260 px circle around the
+  home, presented in a seeded random order (all 8 before any repeat; the
   positions are frozen in config/cursor_targets.csv), target
   radius 40 px, cursor radius 15 px, dwell 1 s inside the target,
-  N_TARGETS (248, as in the original) targets, center-out: centre -> target
-  -> centre -> target ... (496 goals in total), score 4/3/2/1 by reach time.
+  N_TARGETS_CENTER_OUT (64: every circle target 8 times) targets, center-out:
+  centre -> target -> centre -> target ... (64 home + 64 target = 128 goals
+  in total), score 4/3/2/1 by reach time.
   The original's blocks/repetitions and "blind" trials are not reproduced.
 
 The session timer starts when the centre (first goal) is reached for the
@@ -51,22 +52,30 @@ from reaching_metrics import compute_trial_metrics, summarize
 CANVAS_W, CANVAS_H = 1200, 650
 CRS_RADIUS = 15
 TGT_RADIUS = 40
-# Targets are spread over the whole canvas instead of a 260 px circle, to
-# check that every part of the interface can be reached: the canvas is split
-# into GRID_COLS x GRID_ROWS cells, visited in a seeded random order (all cells
-# once before any repeats), with a random point inside each cell.
-GRID_COLS, GRID_ROWS = 6, 3
+# Targets on a circle centred on the home (canvas centre), as in the original:
+# N_CIRCLE_TARGETS targets every 360/N_CIRCLE_TARGETS degrees at TARGET_DIST px
+# from the home, visited in a seeded random order (all of them once before any
+# repeats, never the same one twice in a row). TARGET_DIST keeps the targets
+# well clear of the home ring (260 - 2*40 = 180 px between the edges) and
+# fully visible (325 - 260 - 40 = 25 px from the top/bottom edge).
+N_CIRCLE_TARGETS = 8
+TARGET_DIST = 260
 TARGET_MARGIN = TGT_RADIUS + 10   # keep targets fully on screen
+assert TARGET_DIST + TARGET_MARGIN <= CANVAS_H / 2, "TARGET_DIST too large for the canvas"
 TARGET_SEED = 20
 # The generated positions are frozen in this file (versioned with the code):
 # it is what every session actually uses, so the sequence can never drift.
 TARGETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "cursor_targets.csv")
+TARGETS_HEADER = ["target_number", "index", "angle_deg", "x", "y"]
 
 # --- Sequence ---
-N_TARGETS = 248   # as many as the original's 11 blocks (8+28+28+28+28+8+28+28+28+28+8)
+N_TARGETS = 248   # positions in TARGETS_FILE (and targets of reaching_random.py):
+                  # as many as the original's 11 blocks (8+28+28+28+28+8+28+28+28+28+8)
+N_TARGETS_CENTER_OUT = 64   # center-out: the first 64 of the file = every circle target 8 times
+assert N_TARGETS_CENTER_OUT <= N_TARGETS and N_TARGETS_CENTER_OUT % N_CIRCLE_TARGETS == 0
 
 # --- Timing (markerlessBoMI reaching_functions.py) ---
-DWELL_S = 1.0            # cursor must stay inside the target this long (original: 250 ms)
+DWELL_S = 0.5           # cursor must stay inside the target this long (original: 250 ms)
 OUT_OF_TIME_S = 1.0      # state 1 ("out of time") after this, only affects the score
 TRIAL_TIMEOUT_S = 10.0   # a target not reached within this time is marked missed and skipped
                          # (not applied to the very first centre goal, before the session starts)
@@ -94,60 +103,72 @@ REACHED_FLASH_S = 0.25   # target filled green for this long after a reach
 # Target ring: green, blue while the cursor is inside, filled green once reached.
 
 
+def circle_target(index: int) -> tuple:
+    """(angle_deg, x, y) of circle target `index` (0..N_CIRCLE_TARGETS-1):
+    angle counter-clockwise from the right (0 = right, 90 = top), canvas px."""
+    angle = index * 360.0 / N_CIRCLE_TARGETS
+    x = CANVAS_W / 2.0 + TARGET_DIST * math.cos(math.radians(angle))
+    y = CANVAS_H / 2.0 - TARGET_DIST * math.sin(math.radians(angle))   # canvas y points down
+    return angle, x, y
+
+
 def generate_target_positions(n_targets: int, seed: int = TARGET_SEED) -> list:
-    """n_targets (cell, x, y) spread over the canvas: cells of a
-    GRID_COLS x GRID_ROWS grid in seeded random order (every cell once before
-    any cell repeats), a uniformly random point inside each cell, never the
-    same cell twice in a row. Only used to create TARGETS_FILE once."""
+    """n_targets (index, angle_deg, x, y) on the circle around the home: the
+    N_CIRCLE_TARGETS targets in seeded random order (every target once before
+    any repeats), never the same target twice in a row. Only used to create
+    TARGETS_FILE once."""
     rng = np.random.default_rng(seed)
-    cell_w = (CANVAS_W - 2 * TARGET_MARGIN) / GRID_COLS
-    cell_h = (CANVAS_H - 2 * TARGET_MARGIN) / GRID_ROWS
-    n_cells = GRID_COLS * GRID_ROWS
-    cells, last = [], None
-    while len(cells) < n_targets:
-        perm = rng.permutation(n_cells).tolist()
+    order, last = [], None
+    while len(order) < n_targets:
+        perm = rng.permutation(N_CIRCLE_TARGETS).tolist()
         if perm[0] == last:
             perm.append(perm.pop(0))
-        cells += perm
-        last = cells[-1]
-    out = []
-    for cell in cells[:n_targets]:
-        col, row = cell % GRID_COLS, cell // GRID_COLS
-        x = TARGET_MARGIN + (col + rng.random()) * cell_w
-        y = TARGET_MARGIN + (row + rng.random()) * cell_h
-        out.append((int(cell), float(x), float(y)))
-    return out
+        order += perm
+        last = order[-1]
+    return [(int(i),) + circle_target(int(i)) for i in order[:n_targets]]
 
 
 def target_positions(n_targets: int = N_TARGETS) -> list:
-    """The fixed list of (cell, x, y) targets, read from TARGETS_FILE so that
+    """The fixed list of (index, x, y) targets, read from TARGETS_FILE so that
     every participant and every launch -- on any machine, with any NumPy
     version -- gets exactly the same sequence. The file is created once from
-    generate_target_positions() if it does not exist (delete it to regenerate)."""
-    if not os.path.exists(TARGETS_FILE):
+    generate_target_positions() if it does not exist, or if it was written by
+    an older version with a different layout (delete it to regenerate)."""
+    rows = None
+    if os.path.exists(TARGETS_FILE):
+        with open(TARGETS_FILE, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames == TARGETS_HEADER:
+                rows = list(reader)
+            else:
+                print(f"[targets] {TARGETS_FILE} has an old layout, regenerating it")
+    if rows is None:
         positions = generate_target_positions(n_targets)
+        os.makedirs(os.path.dirname(TARGETS_FILE), exist_ok=True)
         with open(TARGETS_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["target_number", "cell", "x", "y"])
-            w.writerows((k, cell, f"{x:.3f}", f"{y:.3f}") for k, (cell, x, y) in enumerate(positions, start=1))
+            w.writerow(TARGETS_HEADER)
+            w.writerows((k, i, f"{a:.1f}", f"{x:.3f}", f"{y:.3f}")
+                        for k, (i, a, x, y) in enumerate(positions, start=1))
         print(f"[targets] generated {n_targets} target positions -> {TARGETS_FILE} (commit this file)")
-    with open(TARGETS_FILE, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
+        with open(TARGETS_FILE, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
     if len(rows) < n_targets:
         raise ValueError(f"{TARGETS_FILE} has {len(rows)} targets, {n_targets} needed: delete it to regenerate")
-    return [(int(r["cell"]), float(r["x"]), float(r["y"])) for r in rows[:n_targets]]
+    return [(int(r["index"]), float(r["x"]), float(r["y"])) for r in rows[:n_targets]]
 
 
-def build_trials() -> list:
-    """Flat list of goals: centre -> target -> centre -> target ..., the
-    N_TARGETS targets from target_positions() (whole canvas). Each entry:
-    kind, target_number (1..N_TARGETS, the target this goal belongs to),
-    index (grid cell, -1 = centre), x, y (canvas px)."""
+def build_trials(n_targets: int = N_TARGETS_CENTER_OUT) -> list:
+    """Flat list of goals: centre -> target -> centre -> target ..., the first
+    n_targets targets from target_positions() (circle around the home; 64 =
+    each of the 8 targets 8 times, 128 goals). Each entry: kind, target_number
+    (1..n_targets, the target this goal belongs to), index (circle target
+    0..N_CIRCLE_TARGETS-1, -1 = centre), x, y (canvas px)."""
     cx, cy = CANVAS_W / 2.0, CANVAS_H / 2.0
     trials = []
-    for k, (cell, x, y) in enumerate(target_positions(N_TARGETS), start=1):
+    for k, (index, x, y) in enumerate(target_positions(n_targets), start=1):
         trials.append({"kind": "home", "target_number": k, "index": -1, "x": cx, "y": cy})
-        trials.append({"kind": "target", "target_number": k, "index": cell, "x": x, "y": y})
+        trials.append({"kind": "target", "target_number": k, "index": index, "x": x, "y": y})
     return trials
 
 
@@ -279,14 +300,14 @@ class ReachingCursorTest:
                 continue
             key = (r["target_x"], r["target_y"])
             if key not in missed:
-                missed[key] = {"kind": r["kind"], "cell": r["index"],
+                missed[key] = {"kind": r["kind"], "index": r["index"],
                                "x": round(r["target_x"], 1), "y": round(r["target_y"], 1),
                                "times_missed": 0, "trials": [], "reasons": []}
             missed[key]["times_missed"] += 1
             missed[key]["trials"].append(r["trial"])
             missed[key]["reasons"].append(r["end_reason"])
-        missed_by_cell = collections.Counter(r["index"] for r in self.results if not r["success"])
-        shown_by_cell = collections.Counter(r["index"] for r in self.results)
+        missed_by_index = collections.Counter(r["index"] for r in self.results if not r["success"])
+        shown_by_index = collections.Counter(r["index"] for r in self.results)
         summary = {
             "subject": self.subject, "sequence": self.sequence, "end_reason": reason,
             "n_trials_total": len(self.trials),
@@ -294,21 +315,21 @@ class ReachingCursorTest:
             "timestamp": self.timestamp,
             "score": self.score,
             **summarize(self.results),
-            # Which targets were not reached: grid cell (-1 = centre), canvas
-            # position, how many times it was missed, in which trials and why
-            # (trial_timeout / session_timeout / aborted)
+            # Which targets were not reached: circle target index (-1 = centre),
+            # canvas position, how many times it was missed, in which trials and
+            # why (trial_timeout / session_timeout / aborted)
             "missed_targets": list(missed.values()),
-            # Misses per grid cell (-1 = centre): how many goals in that cell were
-            # shown and how many of them were missed
-            "missed_by_cell": {
-                str(cell): {"presented": shown_by_cell[cell], "missed": missed_by_cell.get(cell, 0)}
-                for cell in sorted(missed_by_cell)
+            # Misses per circle target (-1 = centre): how many times that target
+            # was shown and how many of them were missed
+            "missed_by_index": {
+                str(i): {"presented": shown_by_index[i], "missed": missed_by_index.get(i, 0)}
+                for i in sorted(missed_by_index)
             },
             "config": {
                 "canvas": [CANVAS_W, CANVAS_H], "crs_radius": CRS_RADIUS, "tgt_radius": TGT_RADIUS,
-                "grid": [GRID_COLS, GRID_ROWS], "target_seed": TARGET_SEED,
+                "n_circle_targets": N_CIRCLE_TARGETS, "target_dist": TARGET_DIST, "target_seed": TARGET_SEED,
                 "dwell_s": DWELL_S, "max_seconds": self.max_seconds,
-                "n_targets": N_TARGETS,
+                "n_targets": sum(1 for tr in self.trials if tr["kind"] == "target"),
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }
@@ -447,7 +468,7 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
     if summary["missed_targets"]:
         print("Missed targets:")
         for m in summary["missed_targets"]:
-            print(f"  {m['kind']:6s} cell {m['cell']:2d}  at ({m['x']:.0f}, {m['y']:.0f})  missed {m['times_missed']}x "
+            print(f"  {m['kind']:6s} target {m['index']:2d}  at ({m['x']:.0f}, {m['y']:.0f})  missed {m['times_missed']}x "
                   f"(trials {m['trials']}, {', '.join(sorted(set(m['reasons'])))})")
 
 
