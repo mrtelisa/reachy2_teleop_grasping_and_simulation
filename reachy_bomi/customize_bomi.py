@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Customization tool, no robot needed: load a saved calibration, adjust it live
-and save it under a new name (the original is untouched).
+Step 2, once per participant (no robot needed): markerlessBoMI's
+"Customization". Loads the shared autoencoder map (calibrations/shared.npz,
+from calibrate_bomi.py), lets you rotate / flip / scale / offset it live on the
+participant's hand and saves it as calibrations/<SUBJECT>_custom.npz -- the map
+reachy_training.py / reachy_control.py --subject SUBJECT load. The shared map
+is untouched.
 
 Keys: [ / ] rotate, i / o flip X / Y, - / = scale, h j k l offset, r reset,
-      s save as..., q quit
+      s save, q quit
 
-    python3 customize_bomi.py NAME [--cam INDEX] [--model PATH]
+    python3 customize_bomi.py SUBJECT [--base NAME] [--cam INDEX] [--model PATH]
 """
 
 import argparse
@@ -26,25 +30,25 @@ SCALE_STEP = 1.1     # multiplicative
 OFFSET_STEP_PX = 10.0
 
 HELP_TEXT = (
-    "[ ]=rotate  i/o=flip X/Y  -/+=scale  hjkl=offset  r=reset  s=save as...  q=quit"
+    "[ ]=rotate  i/o=flip X/Y  -/+=scale  hjkl=offset  r=reset  s=save  q=quit"
 )
 
 
-def _prompt_and_save(bomi_map: bomi_teleop.BoMIMap) -> bool:
+def _prompt_and_save(bomi_map: bomi_teleop.BoMIMap, default_name: str) -> bool:
     """Returns True once the map is actually saved (False if the user cancels
-    with a blank name, so the caller keeps previewing)."""
-    name = input("Save customized calibration as (blank = cancel): ").strip()
-    if not name:
+    with '-', so the caller keeps previewing). Blank = default_name."""
+    name = input(f"Save participant map as [{default_name}] ('-' = cancel): ").strip()
+    if name == "-":
         print("Cancelled.")
         return False
-    path = bomi_teleop.resolve_calib_path(name)
+    path = bomi_teleop.resolve_calib_path(name or default_name)
     os.makedirs(bomi_teleop.CALIB_DIR, exist_ok=True)
     bomi_map.save_map_bomi(path)
     print(f"Saved to {path}")
     return True
 
 
-def _customize_and_save(cap, landmarker, calib_path: str) -> None:
+def _customize_and_save(cap, landmarker, calib_path: str, default_name: str) -> None:
     bomi_map = bomi_teleop.BoMIMap()
     bomi_map.load_map_bomi(calib_path)
 
@@ -88,7 +92,7 @@ def _customize_and_save(cap, landmarker, calib_path: str) -> None:
             bomi_map.load_map_bomi(calib_path)
             print("Reset to the original calibration.")
         elif key == ord('s'):
-            if _prompt_and_save(bomi_map):
+            if _prompt_and_save(bomi_map, default_name):
                 return
         elif safety.quit_requested(key, map_window):
             print("Closed without saving.")
@@ -99,20 +103,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("name", help="Calibration to load, e.g. 'elisa' for calibrations/elisa.npz")
+    parser.add_argument("subject", help="Participant id, e.g. S001: saves to calibrations/S001_custom.npz")
+    parser.add_argument("--base", default=bomi_teleop.SHARED_MAP_NAME,
+                        help=f"Map to customize, calibrations/<NAME>.npz (default: {bomi_teleop.SHARED_MAP_NAME})")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--model", default=bomi_teleop.DEFAULT_MODEL_PATH,
                         help="Path to the MediaPipe hand_landmarker.task model.")
     cli_args = parser.parse_args()
 
-    calib_path = bomi_teleop.resolve_calib_path(cli_args.name)
+    calib_path = bomi_teleop.resolve_calib_path(cli_args.base)
     if not os.path.exists(calib_path):
-        print(f"[ERROR] No calibration file '{calib_path}' found.")
-        if os.path.isdir(bomi_teleop.CALIB_DIR):
-            available = [f for f in os.listdir(bomi_teleop.CALIB_DIR) if f.endswith(".npz")]
-            if available:
-                print("        Available: " + ", ".join(sorted(available)))
+        print(f"[ERROR] No map '{calib_path}' found: run calibrate_bomi.py first (or check --base).")
+        available = bomi_teleop.list_saved_maps()
+        if available:
+            print("        Available: " + ", ".join(available))
         sys.exit(1)
+    default_name = cli_args.subject
+    if not default_name.endswith(bomi_teleop.CUSTOM_SUFFIX):
+        default_name += bomi_teleop.CUSTOM_SUFFIX
 
     if not os.path.exists(cli_args.model):
         print(f"[ERROR] MediaPipe model not found: '{cli_args.model}'")
@@ -138,7 +146,7 @@ def main() -> None:
         )
         landmarker = hand_landmarker.HandLandmarker.create_from_options(landmarker_options)
 
-        _customize_and_save(cap, landmarker, calib_path)
+        _customize_and_save(cap, landmarker, calib_path, default_name)
     finally:
         if cap is not None:
             cap.release()

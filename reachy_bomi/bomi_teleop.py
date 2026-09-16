@@ -6,6 +6,7 @@ cursor-preview phases. Library module used by reachy_control.py and the
 calibration tools.
 """
 
+import json
 import os
 import sys
 import time
@@ -57,6 +58,16 @@ MAP_WINDOW_POS = (0, 0)
 
 CALIB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "calibrations")
 
+# Continuous calibration, as in markerlessBoMI: the hand is recorded on every
+# tracked frame for CALIB_DURATION_S (90 s there, at 50 Hz -> ~4500 samples)
+CALIB_DURATION_S = 90.0
+
+# One autoencoder map, trained once (calibrate_bomi.py) and customized per
+# participant (customize_bomi.py) -- as markerlessBoMI was used
+SHARED_MAP_NAME = "shared"      # calibrations/shared.npz (+ shared_calib.npy, its raw samples)
+SAMPLES_SUFFIX = "_calib.npy"   # raw calibration samples (markerlessBoMI's SXXX_Calib.txt)
+CUSTOM_SUFFIX = "_custom"       # a participant's customized map (its rotation/scale/offset_custom.txt)
+
 
 def resolve_calib_path(name: str) -> str:
     """Bare name -> calibrations/<name>.npz; an explicit path is used as-is."""
@@ -65,6 +76,32 @@ def resolve_calib_path(name: str) -> str:
     if os.path.dirname(name):
         return name
     return os.path.join(CALIB_DIR, name)
+
+
+def resolve_samples_path(name: str) -> str:
+    """Map name -> calibrations/<name>_calib.npy (the raw calibration samples)."""
+    return os.path.join(CALIB_DIR, name + SAMPLES_SUFFIX)
+
+
+def resolve_subject_map_path(subject: str) -> str:
+    """Participant id -> calibrations/<subject>_custom.npz (from customize_bomi.py)."""
+    return resolve_calib_path(subject + CUSTOM_SUFFIX)
+
+
+def list_saved_maps() -> list:
+    """Names of the .npz maps found in CALIB_DIR (for error messages)."""
+    if not os.path.isdir(CALIB_DIR):
+        return []
+    return sorted(f[:-4] for f in os.listdir(CALIB_DIR) if f.endswith(".npz"))
+
+
+def save_calib_samples(path: str, samples: list) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    np.save(path, np.asarray(samples, dtype=np.float64))
+
+
+def load_calib_samples(path: str) -> np.ndarray:
+    return np.load(path)
 
 
 class CursorFilter:
@@ -106,14 +143,28 @@ class CursorFilter:
         self._out_history[:] = steady
 
 
-# --- Autoencoder map (same architecture/hyperparameters as markerlessBoMI's dr_mode="ae") ---
+# --- Autoencoder map (same architecture/hyperparameters/training as markerlessBoMI's train_ae) ---
 # Input -> Dense(32, tanh) -> Dense(32, tanh) -> Dense(2) [cursor] -> ... -> Dense(n_features)
-AE_N_STEPS = 3001      # training epochs (n_steps)
+AE_N_STEPS = 3001      # training epochs (n_steps), full-batch
 AE_LR = 0.02           # Adam learning rate
 AE_HIDDEN_UNITS = 32   # nh1 = nh2
 AE_ACTIVATION = "tanh"
 AE_SEED = 20
 AE_LATENT_DIM = 2      # cu: 2 code units -> (crs_x, crs_y)
+AE_TEST_SPLIT = 0.2    # 80/20 train/test split of the shuffled calibration samples
+
+
+def compute_vaf(x: np.ndarray, x_rec: np.ndarray) -> float:
+    """Variance accounted for (%) by the reconstruction, both zero-meaned."""
+    x_zm = x - x.mean(axis=0)
+    x_rec_zm = x_rec - x_rec.mean(axis=0)
+    return float(100.0 * (1.0 - np.sum((x_zm - x_rec_zm) ** 2) / np.sum(x_zm ** 2)))
+
+
+def compute_latent_variance(latent: np.ndarray) -> list:
+    """Share (%) of the latent variance carried by each code unit."""
+    var = np.sum((latent - latent.mean(axis=0)) ** 2, axis=0)
+    return [float(v) for v in 100.0 * var / var.sum()]
 
 
 class BoMIMap:
@@ -127,16 +178,27 @@ class BoMIMap:
         self._w3 = self._b3 = None  # encoder layer 3 (Dense, linear) -> latent/cursor
         self._A = np.eye(2)     # latent -> screen affine map (starts diagonal = plain scale)
         self._b = np.zeros(2)
+        self.metrics = {}       # training report of fit() (VAF, latent variance, sample counts)
         self.fitted = False
 
-    def fit(self, samples: list) -> None:
+    def fit(self, samples, test_split: float = AE_TEST_SPLIT) -> dict:
+        """Train the autoencoder on the calibration samples the way markerlessBoMI's
+        train_ae does: drop all-zero rows, shuffle, hold out test_split for
+        testing, train full-batch on the rest, then scale the training latent
+        codes onto the screen. Returns (and stores in self.metrics) VAF and
+        latent-variance share on train and test."""
         X = np.array(samples, dtype=np.float32)
+        X = X[np.any(X != 0, axis=1)]  # frames recorded before the first detection
         n_features = X.shape[1]
 
         tf.keras.backend.clear_session()
         np.random.seed(AE_SEED)
         tf.random.set_seed(AE_SEED)
         initializer = tf.keras.initializers.GlorotNormal(seed=AE_SEED)
+
+        np.random.shuffle(X)
+        split = int(round(len(X) * (1.0 - test_split)))
+        train_x, test_x = X[:split], X[split:]
 
         inputs = Input(shape=(n_features,))
         hidden1 = Dense(AE_HIDDEN_UNITS, activation=AE_ACTIVATION, kernel_initializer=initializer)(inputs)
@@ -150,9 +212,12 @@ class BoMIMap:
         autoencoder = Model(inputs=inputs, outputs=predictions)
         autoencoder.compile(loss="mse", optimizer=Adam(learning_rate=AE_LR))
 
-        print(f"Training autoencoder BoMI map ({AE_N_STEPS} epochs)...")
-        autoencoder.fit(x=X, y=X, epochs=AE_N_STEPS, verbose=0, batch_size=len(X), shuffle=False)
-        print("Autoencoder training done.")
+        print(f"Training autoencoder BoMI map on {len(train_x)} samples "
+              f"({len(test_x)} held out, {AE_N_STEPS} epochs)...")
+        t0 = time.time()
+        autoencoder.fit(x=train_x, y=train_x, epochs=AE_N_STEPS, verbose=0,
+                        batch_size=len(train_x), shuffle=False)
+        print(f"Autoencoder training done in {time.time() - t0:.0f}s.")
 
         # Only the encoder half is kept for inference
         dense_layers = [layer for layer in autoencoder.layers if layer.get_weights()]
@@ -160,7 +225,7 @@ class BoMIMap:
         self._w2, self._b2 = dense_layers[1].get_weights()
         self._w3, self._b3 = dense_layers[2].get_weights()
 
-        train_cu = encoder.predict(X, verbose=0)
+        train_cu = encoder.predict(train_x, verbose=0)
 
         extent = np.ptp(train_cu, axis=0)
         extent = np.where(extent > 1e-6, extent, 1.0)
@@ -171,6 +236,30 @@ class BoMIMap:
         self._A = np.diag(scale)
         self._b = screen / 2.0 - (train_cu * scale).mean(axis=0)
         self.fitted = True
+
+        # Training report, as train_ae prints/saves it (vaf.txt, latent_variance.txt)
+        self.metrics = {
+            "n_train": int(len(train_x)),
+            "n_test": int(len(test_x)),
+            "vaf_train": compute_vaf(train_x, autoencoder.predict(train_x, verbose=0)),
+            "cu_train": compute_latent_variance(train_cu),
+        }
+        if len(test_x) > 1:
+            test_cu = encoder.predict(test_x, verbose=0)
+            self.metrics["vaf_test"] = compute_vaf(test_x, autoencoder.predict(test_x, verbose=0))
+            self.metrics["cu_test"] = compute_latent_variance(test_cu)
+        self.print_metrics()
+        return self.metrics
+
+    def print_metrics(self) -> None:
+        m = self.metrics
+        if not m:
+            return
+        print(f"  samples: {m['n_train']} train / {m['n_test']} test")
+        print(f"  VAF: train {m['vaf_train']:.2f}%" + (f", test {m['vaf_test']:.2f}%" if "vaf_test" in m else ""))
+        cu = " / ".join(f"{v:.1f}%" for v in m["cu_train"])
+        print(f"  latent variance (CU x / CU y): train {cu}"
+              + (", test " + " / ".join(f"{v:.1f}%" for v in m["cu_test"]) if "cu_test" in m else ""))
 
     def transform(self, features: np.ndarray) -> tuple:
         """Landmarks -> (crs_x, crs_y) in pixels, clipped to the screen."""
@@ -204,6 +293,7 @@ class BoMIMap:
             w3=self._w3, b3=self._b3,
             A=self._A,
             b=self._b,
+            metrics=json.dumps(self.metrics),
         )
 
     def load_map_bomi(self, path: str) -> None:
@@ -213,6 +303,7 @@ class BoMIMap:
         self._w3, self._b3 = data["w3"], data["b3"]
         self._A = data["A"]
         self._b = data["b"]
+        self.metrics = json.loads(str(data["metrics"])) if "metrics" in data else {}
         self.fitted = True
 
 
@@ -368,15 +459,22 @@ def map_bomi_to_frame(crs_x: float, crs_y: float, width: int, height: int) -> tu
 
 
 # --- Phases ---
-def calibration_phase(cap, landmarker) -> list:
-    MIN_SAMPLES = 30
+def calibration_phase(cap, landmarker, duration_s: float = CALIB_DURATION_S,
+                      window_name: str = "BoMI - Calibration") -> list:
+    """Continuous calibration, as in markerlessBoMI's compute_calibration: once
+    started (SPACE), the hand features are recorded on every frame where the
+    hand is tracked until duration_s has elapsed, with the time remaining on
+    screen. No sample is picked by hand: the participant just keeps moving the
+    hand through the whole workspace. Q/Esc/closing the window quits.
+    Returns the list of 42-element samples."""
     samples = []
 
     print("\n=== CALIBRATION ===")
-    print("Move your hand through all positions you intend to use.")
-    print("SPACE = record sample   |   ENTER = finish (need >= 30)   |   Q = quit")
+    print(f"Continuous recording for {duration_s:.0f}s: keep moving your hand through all the "
+          "positions you intend to use, at the speed you will use them.")
+    print("SPACE = start   |   Q = quit")
 
-    last_landmarks = None  # last detection, so a keypress on a dropout frame still records a sample
+    start_time = None
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -386,36 +484,40 @@ def calibration_phase(cap, landmarker) -> list:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         results = landmarker.detect_for_video(mp_image, int(time.time() * 1000))
 
-        if results.hand_landmarks:
-            last_landmarks = results.hand_landmarks[0]
-            _draw_hand_landmarks(frame, last_landmarks)
+        hand = results.hand_landmarks[0] if results.hand_landmarks else None
+        if hand is not None:
+            _draw_hand_landmarks(frame, hand)
 
-        label = f"Samples: {len(samples)}/{MIN_SAMPLES}  SPACE=add  ENTER=done  Q=quit"
-        cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
-        window_name = "BoMI - Calibration"
+        now = time.time()
+        if start_time is None:
+            label = f"Get ready: SPACE starts {duration_s:.0f}s of recording   Q=quit"
+            color = (0, 255, 255)
+        else:
+            if hand is not None:
+                samples.append(_extract_hand_features(hand))
+            remaining = duration_s - (now - start_time)
+            if remaining <= 0:
+                print(f"  Calibration done ({len(samples)} samples in {duration_s:.0f}s)")
+                break
+            label = f"Calibration time: {remaining:4.0f}s   samples: {len(samples)}"
+            color = (0, 255, 0) if hand is not None else (0, 0, 255)
+            if hand is None:
+                cv2.putText(frame, "no hand detected", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+
+        cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
         cv2.imshow(window_name, frame)
         key = cv2.waitKey(1) & 0xFF
 
-        if key == ord(' '):
-            if last_landmarks is not None:
-                samples.append(_extract_hand_features(last_landmarks))
-                print(f"  Sample {len(samples)} recorded")
-            else:
-                print("  SPACE ignored: no hand detected yet")
-
-        elif key == 13:  # ENTER
-            if len(samples) >= MIN_SAMPLES:
-                print(f"  Calibration done ({len(samples)} samples)")
-                break
-            else:
-                print(f"  Need at least {MIN_SAMPLES} samples (have {len(samples)})")
-
+        if key == ord(' ') and start_time is None:
+            start_time = time.time()
+            print("  Recording...")
         elif safety.quit_requested(key, window_name):
             print("Aborted.")
             sys.exit(0)
 
     safety.destroy_window(window_name)
     return samples
+
 
 def cursor_preview_phase(cap, landmarker, bomi_map: BoMIMap, cursor_filter: CursorFilter = None,
                            crs_x: float = None, crs_y: float = None, show_cam: bool = True,

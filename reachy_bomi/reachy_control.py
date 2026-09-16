@@ -9,7 +9,8 @@ Usage:
                               [--conf 0.5] [--calib NAME] [--subject ID]
 
 Phases:
-  1. Calibration (skipped with --calib) and 2. cursor preview: see bomi_teleop.
+  1. Load the participant's map (customize_bomi.py, run beforehand without the
+     robot; --calib overrides) and 2. cursor preview: see bomi_teleop.
   3. Control: cursor -> 9-region velocity -> mobile base. A dwell in region 5
      asks "continue on the pipeline?": Yes moves the arms to the pre-grasp pose
      and resumes Control at reduced speed; a second dwell + Yes opens object
@@ -611,8 +612,8 @@ def main() -> None:
     parser.add_argument("--conf", type=float, default=reachy_detection.YOLO_CONFIDENCE,
                         help=f"Minimum detection confidence (default: {reachy_detection.YOLO_CONFIDENCE})")
     parser.add_argument("--calib", default=None,
-                        help="Name of a calibration saved by calibrate_bomi.py to load instead of "
-                             "running the calibration phase")
+                        help="Map to load (calibrations/<NAME>.npz) instead of the participant's "
+                             "calibrations/<subject>_custom.npz from customize_bomi.py")
     parser.add_argument("--subject", default="S000",
                         help="Subject id for the session metrics file in results_robot/ (default: S000)")
     cli_args = parser.parse_args()
@@ -626,16 +627,20 @@ def main() -> None:
         print("        Download hand_landmarker.task and pass its path with --model.")
         sys.exit(1)
 
-    calib_path = None
+    # The map is the participant's customization of the shared autoencoder
+    # (calibrate_bomi.py once, customize_bomi.py per participant), made
+    # beforehand without the robot: no calibration/training happens here
     if cli_args.calib:
         calib_path = bomi_teleop.resolve_calib_path(cli_args.calib)
-        if not os.path.exists(calib_path):
-            print(f"[ERROR] No calibration file '{calib_path}' found.")
-            if os.path.isdir(bomi_teleop.CALIB_DIR):
-                available = [f for f in os.listdir(bomi_teleop.CALIB_DIR) if f.endswith(".npz")]
-                if available:
-                    print("        Available: " + ", ".join(sorted(available)))
-            sys.exit(1)
+    else:
+        calib_path = bomi_teleop.resolve_subject_map_path(cli_args.subject)
+    if not os.path.exists(calib_path):
+        print(f"[ERROR] No calibration map '{calib_path}' found: "
+              f"run customize_bomi.py {cli_args.subject} first.")
+        available = bomi_teleop.list_saved_maps()
+        if available:
+            print("        Available: " + ", ".join(available))
+        sys.exit(1)
 
     reachy = ReachySDK(host=cli_args.robot_ip)
     if reachy.mobile_base is None:
@@ -698,13 +703,9 @@ def main() -> None:
         landmarker = hand_landmarker.HandLandmarker.create_from_options(landmarker_options)
 
         bomi_map = bomi_teleop.BoMIMap()
-        if calib_path is not None:
-            bomi_map.load_map_bomi(calib_path)
-            print(f"Loaded calibration from {calib_path} (calibration phase skipped)")
-        else:
-            samples = bomi_teleop.calibration_phase(cap, landmarker)
-            bomi_map.fit(samples)
-            print("PCA map fitted")
+        bomi_map.load_map_bomi(calib_path)
+        print(f"Loaded calibration map from {calib_path}")
+        bomi_map.print_metrics()
         bring_window_to_front(bomi_teleop.MAP_WINDOW_NAME, bomi_teleop.MAP_WINDOW_POS)
         start_camera_viewer(cli_args.robot_ip)
         reachy.head.rotate_by(pitch=-STARTUP_GAZE_PITCH_DEG, yaw=0, roll=0, wait=False)  # look down

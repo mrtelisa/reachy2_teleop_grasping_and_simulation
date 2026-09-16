@@ -4,8 +4,9 @@ __pycache__/
 build/
 install/
 log/
-# Saved BoMI calibrations (calibrations/*.npz)
+# Saved BoMI calibrations: raw samples (calibrations/*_calib.npy) and maps (calibrations/*.npz)
 *.npz
+*.npy
 *.png
 # Session metrics of reachy_control.py / reachy_training.py
 results_robot/
