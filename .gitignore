@@ -9,3 +9,5 @@ log/
 *.png
 # Session metrics of reachy_control.py
 results_robot/
+results_center_out/
+results_random/
