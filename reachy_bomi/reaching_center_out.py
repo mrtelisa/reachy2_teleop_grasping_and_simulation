@@ -54,6 +54,8 @@ from reaching_metrics import compute_trial_metrics, summarize
 CANVAS_W, CANVAS_H = 1200, 650
 CRS_RADIUS = 15
 TGT_RADIUS = 40
+CAM_INSET_W = 240          # webcam picture-in-picture width, in canvas px (top-left corner)
+CAM_INSET_MARGIN = 15
 # Targets on a circle centred on the home (canvas centre), as in the original:
 # N_CIRCLE_TARGETS targets every 360/N_CIRCLE_TARGETS degrees at TARGET_DIST px
 # from the home, visited in a seeded random order (all of them once before any
@@ -79,7 +81,7 @@ assert N_TARGETS_CENTER_OUT <= N_TARGETS and N_TARGETS_CENTER_OUT % N_CIRCLE_TAR
 # --- Timing (markerlessBoMI reaching_functions.py) ---
 DWELL_S = 0.5           # cursor must stay inside the target this long (original: 250 ms)
 OUT_OF_TIME_S = 1.0      # state 1 ("out of time") after this, only affects the score
-TRIAL_OVER_TIME_S = 10.0   # a target taking longer than this is flagged over_time in the results
+TRIAL_OVER_TIME_S = 60.0   # a target taking longer than this is flagged over_time in the results
                            # (recorded only: the target stays until it is reached, nothing is skipped)
 # Score, as in the original: points by the time from target shown to entering
 # it (the dwell is not counted): < 2 s -> 4, < 3 s -> 3, < 4 s -> 2, else 1.
@@ -374,8 +376,19 @@ class Screen:
     def px(self, r: float) -> int:
         return max(1, int(round(r * self.scale)))
 
-    def draw(self, test: ReachingCursorTest, crs_x: float, crs_y: float, t: float, hand_detected: bool) -> None:
+    def draw(self, test: ReachingCursorTest, crs_x: float, crs_y: float, t: float, hand_detected: bool,
+             cam_frame: np.ndarray = None) -> None:
         img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+        # Webcam + MediaPipe landmarks as a small inset in the top-left corner
+        # (a separate window would be hidden behind the fullscreen one)
+        text_y = int(40 * self.scale)
+        if cam_frame is not None and cam_frame.size:
+            m = int(CAM_INSET_MARGIN * self.scale)
+            iw = int(CAM_INSET_W * self.scale)
+            ih = max(1, int(round(iw * cam_frame.shape[0] / cam_frame.shape[1])))
+            img[m:m + ih, m:m + iw] = cv2.resize(cam_frame, (iw, ih))
+            cv2.rectangle(img, (m - 1, m - 1), (m + iw, m + ih), WHITE, 1)
+            text_y = m + ih + int(35 * self.scale)
         tr = test.trial
         if tr is not None and not test.end_reason:
             state = test.state(t, crs_x, crs_y)
@@ -391,7 +404,7 @@ class Screen:
         font, fs = cv2.FONT_HERSHEY_SIMPLEX, 0.9 * self.scale
         cv2.putText(img, str(test.score), (self.w - int(120 * self.scale), int(60 * self.scale)), font, 1.8 * self.scale, RED, 3)
         cv2.putText(img, f"target {min(test.trial_i + 1, len(test.trials))}/{len(test.trials)}",
-                    (int(20 * self.scale), int(40 * self.scale)), font, fs, BLUE, 2)
+                    (int(20 * self.scale), text_y), font, fs, BLUE, 2)
         elapsed = (t - test.t_session0) if test.t_session0 is not None else 0.0   # no limit, just shown
         cv2.putText(img, f"{int(elapsed // 60)}:{int(elapsed % 60):02d}",
                     (int(20 * self.scale), self.h - int(20 * self.scale)), font, fs, WHITE, 2)
@@ -456,12 +469,12 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
     test.start(time.time())
     try:
         while not test.end_reason:
-            _, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)
             test.update(t, cx, cy)
-            screen.draw(test, cx, cy, t, hand_detected)
+            screen.draw(test, cx, cy, t, hand_detected, cam_frame=frame)
             key = cv2.waitKey(1) & 0xFF
             if bomi._quit_requested(key, screen.window):
                 test.end_reason = "aborted"
