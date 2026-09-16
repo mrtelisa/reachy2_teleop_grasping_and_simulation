@@ -1,8 +1,9 @@
 """
-Session metrics of a reachy_control.py run, written to
-results_robot/<subject>_session.json (_1, _2, ... for later sessions).
-Test = from Control start (after the cursor preview) to the "No" to "pick
-another object?". Positions come from the mobile base odometry.
+Session metrics of a reachy_control.py run (or a reachy_training.py one),
+written to results_robot/<subject>_session.json (_1, _2, ... for later
+sessions; results_training/ for the training). Test = from Control start
+(after the cursor preview) to the "No" to "pick another object?". Positions
+come from the mobile base odometry.
 
   test_duration, navigation_duration   navigation = up to the first object selection
   n_repositioning                      repositioning navigations used
@@ -12,7 +13,14 @@ another object?". Positions come from the mobile base odometry.
   log_dimensionless_jerk               navigation smoothness (Hogan & Sternad 2009)
   region_time_percent                  driving time per region, dwells removed from region 5
   n_dwell, n_dwell_declined            dwells while driving, and those answered "No"
+
+Every odometry sample taken while driving (control-loop rate, PUBLISH_HZ =
+20 Hz) is also written as is to <subject>_odometry.csv next to the json:
+t (unix), t_test (s since test start), x, y [m], theta [rad], vx, vy [m/s],
+vtheta [rad/s], mode (max_speed / reduced_speed / repositioning).
 """
+
+import csv
 
 import datetime
 import json
@@ -84,7 +92,9 @@ class SessionMetrics:
         self.optimal_path_m = optimal_path_m
         self.dwell_seconds = dwell_seconds
         os.makedirs(results_dir, exist_ok=True)
-        self.path_json = os.path.join(results_dir, _session_name(subject, results_dir) + "_session.json")
+        base = os.path.join(results_dir, _session_name(subject, results_dir))
+        self.path_json = base + "_session.json"
+        self.path_odometry_csv = base + "_odometry.csv"
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         self.t_test_start = None
@@ -97,6 +107,7 @@ class SessionMetrics:
         self.n_samples = {m: 0 for m in MODES}
         self._last_xy = None
         self._nav_samples = []   # (t, x, y) from test start to the first object selection
+        self._odometry_log = []  # every sample, raw, for the csv
         self.region_time = {r: 0.0 for r in REGIONS}
         self._last_region_tick = None
         self.n_dwell = 0
@@ -149,6 +160,8 @@ class SessionMetrics:
         self.n_samples[mode] += 1
         if self.t_first_selection is None:
             self._nav_samples.append((t, x, y))
+        self._odometry_log.append((t, t - self.t_test_start, x, y, odom.get("theta"),
+                                   odom.get("vx"), odom.get("vy"), odom.get("vtheta"), mode))
 
     def region_tick(self, region: int, now: float = None) -> None:
         """Called every control-loop iteration with the cursor's current
@@ -206,12 +219,17 @@ class SessionMetrics:
             "n_dwell": self.n_dwell,
             "n_dwell_declined": self.n_dwell_declined,
             "n_odometry_samples": dict(self.n_samples),
+            "odometry_file": os.path.basename(self.path_odometry_csv),
         }
 
     def save(self) -> dict:
         s = self.summary()
         with open(self.path_json, "w", encoding="utf-8") as f:
             json.dump(s, f, indent=2)
+        with open(self.path_odometry_csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["t", "t_test", "x", "y", "theta", "vx", "vy", "vtheta", "mode"])
+            w.writerows(self._odometry_log)
         self.saved = True
-        print(f"[metrics] saved {self.path_json}")
+        print(f"[metrics] saved {self.path_json} and {self.path_odometry_csv} ({len(self._odometry_log)} odometry samples)")
         return s

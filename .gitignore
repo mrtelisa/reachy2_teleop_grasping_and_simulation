@@ -7,7 +7,8 @@ log/
 # Saved BoMI calibrations (calibrations/*.npz)
 *.npz
 *.png
-# Session metrics of reachy_control.py
+# Session metrics of reachy_control.py / reachy_training.py
 results_robot/
+results_training/
 results_center_out/
 results_random/

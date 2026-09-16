@@ -20,7 +20,7 @@ webcam → MediaPipe → autoencoder cursor → 9-region velocity → reachy2_sd
       torso depth camera → YOLOv8 → point cloud → grasp planning → arm execution
 ```
 
-`reachy_control.py` is the only script with a CLI/`main()` for real robot use — `bomi_teleop.py`, `reachy_detection.py`, `reachy_selection.py`, `reachy_pregrasp.py`, `reachy_grasp.py`, `camera_viewer.py`, `stream.py`, `safety.py`, `graphs.py` and `session_metrics.py` are library modules it's built from; `calibrate_bomi.py`, `customize_bomi.py` and `load_bomi.py` manage calibrations on their own.
+`reachy_control.py` is the script with a CLI/`main()` for the real test on the robot (`reachy_training.py` is its navigation-only training run, built from the same modules) — `bomi_teleop.py`, `reachy_detection.py`, `reachy_selection.py`, `reachy_pregrasp.py`, `reachy_grasp.py`, `camera_viewer.py`, `stream.py`, `safety.py`, `graphs.py` and `session_metrics.py` are library modules it's built from; `calibrate_bomi.py`, `customize_bomi.py` and `load_bomi.py` manage calibrations on their own.
 
 - **`bomi_teleop.py`** — hand tracking → autoencoder cursor → 9-region velocity building blocks (calibration/cursor-preview phases, the BoMI map, cursor filter, velocity helpers). `BoMIMap.save_map_bomi`/`load_map_bomi` (de)serialize a fitted map to/from a `.npz` file; `resolve_calib_path` turns a bare name into a path inside `CALIB_DIR` (the `calibrations/` folder next to the package; the saved `.npz` files are not tracked by git).
 - **`calibrate_bomi.py`** — standalone tool: run calibration, preview the fitted map live (nothing sent anywhere, no robot needed), then `S` prompts for a name and saves it, `Q` quits without saving. Stays in the preview loop after a cancelled save so you can retry.
@@ -34,7 +34,7 @@ webcam → MediaPipe → autoencoder cursor → 9-region velocity → reachy2_sd
 - **`stream.py`** — blocking camera live feed used by `camera_viewer.py`.
 - **`graphs.py`** — matplotlib diagnostics (point cloud stages, planned grasp); the calls are commented out in `reachy_detection.py`/`reachy_control.py`, uncomment to inspect.
 - **`safety.py`** — quit/shutdown safety net: a local `quit_requested` check (Q/ESC or window closed, while a cv2 window has focus) plus an OS-level global watcher (`pynput`, works regardless of focus, even mid-`arm.goto`) that triggers `emergency_shutdown`.
-- **`session_metrics.py`** — session metrics (durations, path lengths, region shares, dwells, objects moved) written to `results_robot/` at the end of every `reachy_control.py` run.
+- **`session_metrics.py`** — session metrics (durations, path lengths, region shares, dwells, objects moved) and the 20 Hz odometry log, written to `results_robot/` at the end of every `reachy_control.py` run (`results_training/` for `reachy_training.py`).
 
 Dependencies between these run one way only, with no cycles: `reachy_grasp.py`/`bomi_teleop.py` have no dependency on the rest, `reachy_detection.py` depends only on `reachy_grasp.py` (for the shared `ObjectGeometry` type), `reachy_selection.py` depends on both, and `reachy_control.py` ties everything together.
 
@@ -134,6 +134,20 @@ Every run of `reachy_control.py` writes `results_robot/<subject>_session.json` (
 
 The automatic back-up/rotation at the end is not part of any path length.
 
+Next to the JSON, every session also writes `<subject>_odometry.csv` (`odometry_file` in the JSON): the raw mobile base odometry sampled at the control-loop rate (`PUBLISH_HZ` = 20 Hz) while driving — `t` (unix time), `t_test` (s since the test start), `x`, `y` [m], `theta` [rad], `vx`, `vy` [m/s], `vtheta` [rad/s] and the driving `mode` (`max_speed` / `reduced_speed` / `repositioning`) — so any other trajectory parameter can be computed afterwards.
+
+### Navigation training — `reachy_training.py`
+
+A training run for the test above, with the same interface and parameters but nothing beyond driving: no arms, no object selection, no grasp.
+
+```bash
+python3 reachy_bomi/reachy_training.py [robot_ip] [--cam 0] [--model hand_landmarker.task] [--calib NAME] [--subject ID]
+```
+
+Same startup as `reachy_control.py` (calibration or `--calib`, default posture, lidar distances, head looking down), then the **mobile base odometry is reset** so every session's trajectory starts from `x = y = θ = 0`. Cursor preview with the head camera streaming; holding the cursor in region 5 for 3 s (`SELECTION_HOLD_SECONDS`, as in the test) starts driving at the normal speed (`MAX_LINEAR` / `MAX_ANGULAR`, the test's Control before the pre-grasp pose). While driving, a 3 s dwell in region 5 opens the same Yes/No dialog as the test ("Do you want to end the training?"): **Yes** ends the training, **No** goes back to driving through a cursor preview. `Q`/`Esc` quit; the robot is stopped and powered off in every case, without the back-up/rotation (it never sits at the table).
+
+The same [session metrics](#session-metrics) and odometry CSV are written to `results_training/<subject>_session.json` and `results_training/<subject>_odometry.csv` (the fields about object selection/grasp stay empty: `reached_object_selection` false, no objects, no repositioning; all the path is `path_length_max_speed`; `n_dwell_declined` counts the "No" answers to the end dialog).
+
 ### Saving / reusing a calibration — `calibrate_bomi.py` / `customize_bomi.py` / `load_bomi.py`
 
 None of them needs a robot connection — just the webcam and MediaPipe model, so they can run on the operator PC on their own.
@@ -156,7 +170,8 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── __init__.py
 │   ├── reachy_control.py            # THE entry point: ties bomi_teleop/reachy_detection/reachy_selection/reachy_pregrasp/reachy_grasp together under one BoMI cursor
 │   ├── bomi_teleop.py               # library: webcam/MediaPipe → autoencoder cursor → 9-region velocity building blocks, BoMIMap save/load/customize
-│   ├── session_metrics.py           # library: session metrics (durations, path lengths, region shares, dwells) written to results_robot/
+│   ├── reachy_training.py           # navigation training for the test: same preview/driving as reachy_control.py, no arms/grasp, odometry reset at start
+│   ├── session_metrics.py           # library: session metrics (durations, path lengths, region shares, dwells) + 20 Hz odometry csv, written to results_robot/ (results_training/ for the training)
 │   ├── calibrate_bomi.py            # standalone script: run calibration, preview it live, save it by name -- no robot needed
 │   ├── customize_bomi.py            # standalone script: rotate/flip/scale/offset a saved calibration live, save as new -- no robot needed
 │   ├── load_bomi.py                 # standalone script: load a saved calibration by name and preview/use it live -- no robot needed
@@ -170,7 +185,8 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── safety.py                    # library: quit/shutdown safety net (local check + OS-level global watcher)
 │   └── yolov8n.pt                   # YOLOv8 weights (auto-downloaded by ultralytics on first run)
 ├── calibrations/                     # saved BoMIMap .npz files (folder tracked via .gitkeep, the .npz files are not)
-├── results_robot/                    # session metrics JSON files (created on first run, not tracked by git)
+├── results_robot/                    # session metrics JSON + odometry CSV of reachy_control.py (created on first run, not tracked by git)
+├── results_training/                 # the same for reachy_training.py (created on first run, not tracked by git)
 ├── hand_landmarker.task              # MediaPipe model (tracked, see Requirements)
 ├── resource/
 │   └── reachy_bomi                  # ament resource marker
