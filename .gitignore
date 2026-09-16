@@ -10,3 +10,4 @@ log/
 # Cursor reaching test outputs (reaching_center_out.py / reaching_random.py)
 results_center_out/
 results_random/
+results_robot/
