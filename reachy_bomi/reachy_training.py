@@ -6,7 +6,7 @@ at the normal (max) speed. No arms, no object selection, no grasp.
 
 Everything the participant sees and feels is the one of the test, taken from
 reachy_control.py / bomi_teleop.py: same hand -> cursor chain, 9-region
-velocity map, MAX_LINEAR / MAX_ANGULAR, PUBLISH_HZ, 3 s dwell, lidar
+velocity map, MAX_LINEAR / MAX_ANGULAR, PUBLISH_HZ, dwells, lidar
 distances, startup posture and gaze.
 
 Usage:
@@ -17,7 +17,7 @@ Flow:
      robot; --calib overrides), robot on, mobile base ODOMETRY RESET.
   2. Cursor preview (head camera streaming): hold the cursor in region 5 for
      3 s to start driving.
-  3. Driving: cursor -> 9-region velocity -> mobile base. A 3 s dwell in
+  3. Driving: cursor -> 9-region velocity -> mobile base. A 10 s dwell in
      region 5 opens the same Yes/No dialog as the test: Yes ends the
      training, No goes back to driving through a cursor preview.
 Q / ESC = quit (robot stopped and powered off, metrics saved anyway).
@@ -51,7 +51,8 @@ import session_metrics
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_training")
 
-DWELL_SECONDS = reachy_control.SELECTION_HOLD_SECONDS   # 3 s (the test's 10 s is only for its mode switches)
+PREVIEW_HOLD_SECONDS = reachy_control.SELECTION_HOLD_SECONDS   # 3 s, cursor preview -> driving (as in the test)
+DWELL_SECONDS = reachy_control.MODE_SWITCH_HOLD_SECONDS        # 10 s, driving dwell -> end dialog (the test's Control dwell)
 END_PROMPT = ["Do you want to end the training?"]
 
 _metrics: Optional[session_metrics.SessionMetrics] = None   # session metrics, created in main()
@@ -142,7 +143,7 @@ def training_navigation(cap, landmarker, bomi_map, mobile_base, cursor_filter, c
             cursor_filter.reset(crs_x, crs_y)
             crs_x, crs_y = bomi_teleop.cursor_preview_phase(
                 cap, landmarker, bomi_map, cursor_filter=cursor_filter, crs_x=crs_x, crs_y=crs_y, show_cam=False,
-                hold_seconds=DWELL_SECONDS,
+                hold_seconds=PREVIEW_HOLD_SECONDS,
             )
             continue
 
@@ -274,7 +275,7 @@ def main() -> None:
         cursor_filter = bomi_teleop.CursorFilter()
         crs_x, crs_y = bomi_teleop.cursor_preview_phase(
             cap, landmarker, bomi_map, cursor_filter=cursor_filter, show_cam=False,
-            hold_seconds=DWELL_SECONDS,
+            hold_seconds=PREVIEW_HOLD_SECONDS,
         )
         training_navigation(cap, landmarker, bomi_map, mobile_base, cursor_filter, crs_x, crs_y)
     finally:
