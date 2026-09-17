@@ -204,14 +204,16 @@ Two fullscreen tests run markerlessBoMI's reaching test on screen: same hand -> 
 
 ```bash
 cd reachy_bomi
-python3 reaching_center_out.py --subject S001 [--calib <name>]
-python3 reaching_random.py     --subject S001 [--calib <name>]
+python3 reaching_center_out.py --subject S001 [--calib <name>] [--targets 64]
+python3 reaching_random.py     --subject S001 [--calib <name>] [--targets 248]
 ```
 
-- [`reaching_center_out.py`](reachy_bomi/reaching_center_out.py): centre -> target -> centre -> target ... (64 targets = each of the 8 circle targets 8 times, 64 home + 64 target = 128 goals). Results in `results_center_out/<subject>_center_out_{trials.csv,summary.json}`.
-- [`reaching_random.py`](reachy_bomi/reaching_random.py): one goal at the centre, then the 248 targets of the frozen sequence one after the other, no returns to the centre. Results in `results_random/<subject>_random_{trials.csv,summary.json}`. It reuses everything from the center-out script.
+- [`reaching_center_out.py`](reachy_bomi/reaching_center_out.py): centre -> target -> centre -> target ... (64 targets = each of the 8 circle targets 8 times, 64 home + 64 target = 128 goals). Results in `results_center_out/<subject>_center_out_{trials.csv,blocks.csv,summary.json}`.
+- [`reaching_random.py`](reachy_bomi/reaching_random.py): one goal at the centre, then the 248 targets of the frozen sequence one after the other, no returns to the centre. Results in `results_random/<subject>_random_{trials.csv,blocks.csv,summary.json}`. It reuses everything from the center-out script.
 
 Common to both: 1200x650 canvas scaled to the screen (the map's 2550x1500 space is scaled onto it, so the same calibration works here and on the robot), target radius 40 px, **8 targets every 45° on a 260 px circle around the home** (as in the original), presented in a seeded random order (every target once before any repeats, never the same one twice in a row); the 248 positions are frozen in [`config/cursor_targets.csv`](config/cursor_targets.csv), which is what the tests read, so the sequence is identical for every participant and every launch on any machine, dwell **0.5 s** inside a target. **No time limit**: a target stays until it is reached and the session ends only when every goal has been reached (or on `Q`/`Esc`); the time is only recorded -- session duration, per-trial reach time, and targets that took longer than **10 s** are flagged `over_time`. The window shows the target (green ring, blue while the cursor is inside, filled green when reached), the score, a `target k/N` counter and the elapsed time. The **session timer starts when the centre is reached for the first time**. Score, as in the original: 4/3/2/1 points per target by time from its appearance to entering it (< 2 s / < 3 s / < 4 s / more). A subject with previous sessions gets `_1`, `_2`, ... appended to the file names. The summary lists the targets that were not reached (`missed_targets`: trial, circle target index, position, reason).
+
+**Statistics per block of 8 targets.** Every metric of the table above is averaged twice: over the **whole session** (`mean_*` in the summary) and over each **block of `BLOCK_SIZE` = 8 consecutive targets** (targets 1-8, 9-16, ...), for the learning curve. Each block also carries its own duration, score, success rate and `n_over_time`. The blocks are in `summary.json` (`blocks`, plus `block_size` and `n_blocks`) and, one row per block, in `<subject>_<sequence>_blocks.csv`; a compact table is printed at the end of the session. The number of blocks simply follows the number of targets -- 64 targets - 8 blocks, 96 - 12 -- so changing `N_TARGETS_CENTER_OUT` in [`reaching_center_out.py`](reachy_bomi/reaching_center_out.py) or passing `--targets` (any positive multiple of 8; more than the 248 frozen positions requires regenerating `config/cursor_targets.csv`) needs no change to the statistics. A target's return to the centre counts in the same block as the target; the last block of an aborted session is reported with `complete: false`.
 
 ## Scenarios
 

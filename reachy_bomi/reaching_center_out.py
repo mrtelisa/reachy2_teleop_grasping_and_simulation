@@ -24,10 +24,19 @@ trial reach time, targets that took longer than TRIAL_OVER_TIME_S flagged as
 over_time), the window closes and the results are saved (a subject with
 previous sessions gets _1, _2, ... appended):
   results_center_out/<subject>_center_out_trials.csv     one row per trial (metrics)
-  results_center_out/<subject>_center_out_summary.json   success rate, mean metrics, config
+  results_center_out/<subject>_center_out_blocks.csv     one row per block of BLOCK_SIZE targets
+  results_center_out/<subject>_center_out_summary.json   success rate, mean metrics (whole
+                                                         session and per block), config
+
+The statistics (time, normalized_path_length, dimensionless_jerk,
+n_speed_peaks, ... -- every metric of reaching_metrics.py) are computed both
+over the whole session and over each block of BLOCK_SIZE (8) consecutive
+targets, i.e. 8 blocks for 64 targets, 12 for 96: the number of blocks follows
+the number of targets (N_TARGETS_CENTER_OUT, or --targets, a multiple of
+BLOCK_SIZE), nothing else has to be changed.
 
 Usage:
-    python3 reaching_center_out.py --subject S001 [--calib <name>] [--cam 0]
+    python3 reaching_center_out.py --subject S001 [--calib <name>] [--cam 0] [--targets 64]
 (reaching_random.py runs the same test with targets in random order and no
 returns to the centre; it reuses everything in this file.)
 Keys: Q / ESC = abort (results so far are still saved).
@@ -48,7 +57,7 @@ import cv2
 import numpy as np
 
 import socket_client as bomi
-from reaching_metrics import compute_trial_metrics, summarize
+from reaching_metrics import block_summaries, compute_trial_metrics, summarize
 
 # --- Geometry (markerlessBoMI reaching.py) ---
 CANVAS_W, CANVAS_H = 1200, 650
@@ -76,7 +85,12 @@ TARGETS_HEADER = ["target_number", "index", "angle_deg", "x", "y"]
 N_TARGETS = 248   # positions in TARGETS_FILE (and targets of reaching_random.py):
                   # as many as the original's 11 blocks (8+28+28+28+28+8+28+28+28+28+8)
 N_TARGETS_CENTER_OUT = 64   # center-out: the first 64 of the file = every circle target 8 times
+                            # (any multiple of BLOCK_SIZE; --targets overrides it)
 assert N_TARGETS_CENTER_OUT <= N_TARGETS and N_TARGETS_CENTER_OUT % N_CIRCLE_TARGETS == 0
+# Statistics are computed every BLOCK_SIZE targets on top of the whole session:
+# targets 1-8, 9-16, ... -> one block each (8 blocks for 64 targets, 12 for 96).
+# A target's home return belongs to the same block as the target.
+BLOCK_SIZE = N_CIRCLE_TARGETS
 
 # --- Timing (markerlessBoMI reaching_functions.py) ---
 DWELL_S = 0.5           # cursor must stay inside the target this long (original: 250 ms)
@@ -306,6 +320,7 @@ class ReachingCursorTest:
             missed[key]["times_missed"] += 1
             missed[key]["trials"].append(r["trial"])
             missed[key]["reasons"].append(r["end_reason"])
+        blocks = block_summaries(self.results, BLOCK_SIZE)
         missed_by_index = collections.Counter(r["index"] for r in self.results if not r["success"])
         shown_by_index = collections.Counter(r["index"] for r in self.results)
         summary = {
@@ -315,6 +330,11 @@ class ReachingCursorTest:
             "timestamp": self.timestamp,
             "score": self.score,
             **summarize(self.results),
+            # Same statistics per block of BLOCK_SIZE targets (targets 1-8, 9-16, ...):
+            # one entry per block, as many blocks as n_targets / BLOCK_SIZE
+            "block_size": BLOCK_SIZE,
+            "n_blocks": len(blocks),
+            "blocks": blocks,
             # Goals that took longer than TRIAL_OVER_TIME_S (reached anyway) and which trials
             "n_over_time": sum(1 for r in self.results if r["over_time"]),
             "over_time_trials": [r["trial"] for r in self.results if r["over_time"]],
@@ -333,6 +353,7 @@ class ReachingCursorTest:
                 "n_circle_targets": N_CIRCLE_TARGETS, "target_dist": TARGET_DIST, "target_seed": TARGET_SEED,
                 "dwell_s": DWELL_S, "trial_over_time_s": TRIAL_OVER_TIME_S, "max_seconds": None,
                 "n_targets": sum(1 for tr in self.trials if tr["kind"] == "target"),
+                "block_size": BLOCK_SIZE,
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }
@@ -341,6 +362,15 @@ class ReachingCursorTest:
                 w = csv.DictWriter(f, fieldnames=list(self.results[0].keys()))
                 w.writeheader()
                 w.writerows(self.results)
+        if blocks:
+            # Same per-block statistics as summary["blocks"], one row per block,
+            # ready to plot as a learning curve
+            with open(self.base + "_blocks.csv", "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for b in blocks for k in b)))
+                w.writeheader()
+                for b in blocks:
+                    w.writerow({k: " ".join(map(str, v)) if isinstance(v, list) else v
+                                for k, v in b.items()})
         with open(self.base + "_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
@@ -412,6 +442,26 @@ class Screen:
 
 
 # --- Entry point ---
+def print_blocks(summary: dict, base: str = None) -> None:
+    """The per-block statistics as a compact table (the blocks CSV/JSON have them all)."""
+    if not summary.get("blocks"):
+        return
+    where = f" (all of them in {os.path.basename(base)}_blocks.csv)" if base else ""
+    print(f"Per block of {summary['block_size']} targets{where}:")
+    print("  block  targets     time  reach_t  norm_path  dimless_jerk  peaks")
+
+    def fmt(b, key, width, prec):
+        v = b.get(key)
+        return f"{v:{width}.{prec}f}" if v is not None else "-".rjust(width)
+
+    for b in summary["blocks"]:
+        print(f"  {b['block']:5d}  {b['first_target']:3d}-{b['last_target']:<3d}"
+              f"{fmt(b, 'duration', 8, 1)}s{fmt(b, 'mean_reach_time', 8, 2)}s"
+              f"{fmt(b, 'mean_normalized_path_length', 10, 2)}{fmt(b, 'mean_dimensionless_jerk', 14, 1)}"
+              f"{fmt(b, 'mean_n_speed_peaks', 7, 2)}"
+              + ("" if b["complete"] else f"   (incomplete: {b['n_targets_in_block']}/{b['block_size']} targets)"))
+
+
 def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "center_out",
          description: str = __doc__) -> None:
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -422,8 +472,16 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
     parser.add_argument("--calib", default=None,
                         help="Map to load (calibrations/<NAME>.npz) instead of the participant's own")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
+    parser.add_argument("--targets", type=int, default=None,
+                        help=f"Number of targets, a multiple of {BLOCK_SIZE} (default: the script's own, "
+                             f"{N_TARGETS_CENTER_OUT} center-out / {N_TARGETS} random). The statistics are "
+                             f"computed per block of {BLOCK_SIZE} targets, so the number of blocks follows")
     parser.add_argument("--model", default=bomi.DEFAULT_MODEL_PATH, help="MediaPipe hand_landmarker.task model")
     args = parser.parse_args()
+
+    if args.targets is not None and (args.targets <= 0 or args.targets % BLOCK_SIZE):
+        print(f"[ERROR] --targets must be a positive multiple of {BLOCK_SIZE} (got {args.targets})")
+        sys.exit(1)
 
     subject = bomi._strip_npz(args.subject)  # "elisa.npz" -> "elisa" in the result file names
     calib_path = bomi._resolve_calib_path(args.calib) if args.calib else bomi._resolve_subject_map_path(args.subject)
@@ -458,7 +516,8 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
         )
     )
 
-    test = ReachingCursorTest(subject, trials=build(), results_dir=results_dir, sequence=sequence)
+    trials = build() if args.targets is None else build(args.targets)
+    test = ReachingCursorTest(subject, trials=trials, results_dir=results_dir, sequence=sequence)
     screen = Screen(title=f"BoMI - Reaching ({sequence})")
     cursor_filter = bomi.CursorFilter()
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas, same calibration as the robot
@@ -486,6 +545,7 @@ def main(build=build_trials, results_dir: str = RESULTS_DIR, sequence: str = "ce
 
     print(f"\nSession over ({summary['end_reason']}): {summary['n_success']}/{summary['n_trials_done']} reached, "
           f"score {summary['score']}, {summary['session_duration']:.0f}s, {summary['n_over_time']} over {TRIAL_OVER_TIME_S:.0f}s")
+    print_blocks(summary, test.base)
     if summary["missed_targets"]:
         print("Missed targets:")
         for m in summary["missed_targets"]:

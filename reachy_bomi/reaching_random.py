@@ -14,12 +14,18 @@ targets of the center-out test in seeded random order, every target before
 any repeat; the center-out test only uses the first 64), in the same order:
 fixed, identical for every participant and every launch.
 
+The statistics (time, normalized_path_length, dimensionless_jerk,
+n_speed_peaks, ...) are computed over the whole session and, as in the
+center-out test, over each block of base.BLOCK_SIZE (8) consecutive targets
+(31 blocks for the 248 targets; --targets, a multiple of 8, changes both).
+
 Results (a subject with previous sessions gets _1, _2, ... appended):
   results_random/<subject>_random_trials.csv
+  results_random/<subject>_random_blocks.csv
   results_random/<subject>_random_summary.json
 
 Usage:
-    python3 reaching_random.py --subject S001 [--calib <name>] [--cam 0]
+    python3 reaching_random.py --subject S001 [--calib <name>] [--cam 0] [--targets 248]
 Keys: Q / ESC = abort (results so far are still saved).
 """
 
@@ -30,10 +36,11 @@ import reaching_center_out as base
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_random")
 
 
-def build_trials() -> list:
-    """One goal at the centre, then all the N_TARGETS (248) targets of the
-    frozen sequence in the same order, with no return to the centre in between."""
-    center_out = base.build_trials(base.N_TARGETS)
+def build_trials(n_targets: int = base.N_TARGETS) -> list:
+    """One goal at the centre, then all the n_targets (248 by default) targets
+    of the frozen sequence in the same order, with no return to the centre in
+    between."""
+    center_out = base.build_trials(n_targets)
     home = next(t for t in center_out if t["kind"] == "home")
     targets = [t for t in center_out if t["kind"] == "target"]
     return [home] + targets

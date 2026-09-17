@@ -14,8 +14,12 @@ Metrics (None where not computable):
   log_dimensionless_jerk  -ln(dimensionless_jerk)
   n_speed_peaks      local maxima of the (smoothed) speed profile above peak_threshold
   mean_speed, peak_speed
+
+summarize() averages them over a whole session, block_summaries() over each
+block of N consecutive targets (learning curve).
 """
 
+import collections
 import math
 
 import numpy as np
@@ -118,8 +122,12 @@ def compute_trial_metrics(samples, goal, t_shown, t_reach, onset_speed, peak_thr
     return m
 
 
-def summarize(results: list, keys=("reaction_time", "reach_time", "movement_time", "normalized_path_length",
-                                   "max_deviation", "log_dimensionless_jerk", "n_speed_peaks")) -> dict:
+# Metrics averaged by summarize()/block_summaries(): all of them, so adding a
+# metric to METRIC_KEYS is enough to have it in the session and block summaries.
+SUMMARY_KEYS = METRIC_KEYS
+
+
+def summarize(results: list, keys=SUMMARY_KEYS) -> dict:
     """Success counts/rates plus the mean of each metric over successful trials."""
     n = len(results)
     n_success = sum(1 for r in results if r.get("success"))
@@ -132,3 +140,56 @@ def summarize(results: list, keys=("reaction_time", "reach_time", "movement_time
         vals = [r[key] for r in results if r.get("success") and r.get(key) is not None]
         summary[f"mean_{key}"] = float(np.mean(vals)) if vals else None
     return summary
+
+
+def block_summaries(results: list, block_size: int, keys=SUMMARY_KEYS,
+                    group_key: str = "target_number") -> list:
+    """One summarize() per block of `block_size` consecutive targets: the same
+    statistics as the whole session, but computed on targets 1..block_size,
+    block_size+1..2*block_size, and so on (so a session of 64 targets with
+    block_size 8 gives 8 blocks, one of 96 gives 12 -- nothing to change when
+    the number of targets changes, as long as it stays a multiple of
+    block_size; a last, incomplete block is still reported, with
+    complete=False).
+
+    results: the trial dicts of the test; each one is assigned to a block by
+    its `group_key` (target_number, 1-based), so in the center-out test the
+    home return of a target counts in the same block as the target itself.
+    The optional keys t_shown/t_end (block duration), points (score) and
+    over_time are used when the trials have them.
+    """
+    block_size = int(block_size)
+    if not results or block_size <= 0:
+        return []
+    blocks = collections.OrderedDict()
+    for r in results:
+        number = r.get(group_key)
+        if number is None:
+            continue
+        blocks.setdefault((int(number) - 1) // block_size + 1, []).append(r)
+    summaries = []
+    for b, rows in sorted(blocks.items()):
+        numbers = sorted({int(r[group_key]) for r in rows})
+        block = {
+            "block": b,
+            "block_size": block_size,
+            "first_target": (b - 1) * block_size + 1,
+            "last_target": b * block_size,
+            "n_targets_in_block": len(numbers),
+            # False only for the last block of an aborted session
+            "complete": len(numbers) == block_size,
+        }
+        starts = [r["t_shown"] for r in rows if r.get("t_shown") is not None]
+        ends = [r["t_end"] for r in rows if r.get("t_end") is not None]
+        if starts and ends:
+            block["t_start"] = min(starts)
+            block["t_end"] = max(ends)
+            block["duration"] = max(ends) - min(starts)
+        if any("points" in r for r in rows):
+            block["score"] = sum(r.get("points") or 0 for r in rows)
+        block.update(summarize(rows, keys))
+        if any("over_time" in r for r in rows):
+            block["n_over_time"] = sum(1 for r in rows if r.get("over_time"))
+            block["over_time_trials"] = [r["trial"] for r in rows if r.get("over_time")]
+        summaries.append(block)
+    return summaries
