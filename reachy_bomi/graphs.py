@@ -115,14 +115,41 @@ def _table_plane_basis(table_normal: np.ndarray) -> tuple:
     return normal, basis_u, basis_v
 
 
-def _set_equal_aspect(ax, points: np.ndarray) -> None:
-    """Same half-range on the three axes, centred on the points' mean."""
-    ranges = points.max(axis=0) - points.min(axis=0)
-    half_range = max(ranges.max() / 2.0, 1e-3)
-    mid = points.mean(axis=0)
+def _set_equal_aspect(ax, points: np.ndarray, margin: float = 0.05) -> None:
+    """Same half-range on the three axes, centred on the middle of the
+    points' bounding box (not their mean: a dense cloud would drag the
+    centre onto itself and push the far waypoints out of frame)."""
+    lo, hi = points.min(axis=0), points.max(axis=0)
+    half_range = max((hi - lo).max() / 2.0, 1e-3) + margin
+    mid = (lo + hi) / 2.0
     ax.set_xlim(mid[0] - half_range, mid[0] + half_range)
     ax.set_ylim(mid[1] - half_range, mid[1] + half_range)
     ax.set_zlim(mid[2] - half_range, mid[2] + half_range)
+
+
+def _look_at_motion_plane(ax, start: np.ndarray, end: np.ndarray, fallback_direction: np.ndarray) -> None:
+    """Orthographic view of the vertical plane through start and end, from
+    the robot's point of view: the camera sits on the horizontal normal of
+    that plane, on the side of the robot (world origin), so left and right on
+    screen are the robot's own. fallback_direction is used when start and end
+    share the same horizontal position."""
+    direction = (end - start)[:2]
+    if np.linalg.norm(direction) < 1e-3:
+        direction = fallback_direction[:2]
+    if np.linalg.norm(direction) < 1e-3:
+        direction = np.array([1.0, 0.0])
+    direction /= np.linalg.norm(direction)
+    camera = np.array([direction[1], -direction[0]])
+    # the robot stands at the origin: put the camera on its side of the plane
+    if np.dot(camera, ((start + end) / 2.0)[:2]) > 0:
+        camera = -camera
+    ax.set_proj_type("ortho")
+    ax.view_init(elev=20.0, azim=float(np.degrees(np.arctan2(camera[1], camera[0]))))
+    ax.set_box_aspect((1.0, 1.0, 1.0), zoom=1.3)  # fill the figure with the box
+    # the axis seen end-on collapses to a point: drop its ticks and label
+    depth_axis = ax.xaxis if abs(camera[0]) >= abs(camera[1]) else ax.yaxis
+    depth_axis.set_ticks([])
+    depth_axis.set_label_text("")
 
 
 def show_grasp_and_place_plan(geometry, plan, place_plan, target_point: np.ndarray,
@@ -170,8 +197,12 @@ def show_grasp_and_place_plan(geometry, plan, place_plan, target_point: np.ndarr
 
     # Selected cell: a cell_size_m square of the placement grid around
     # target_point, drawn at the table level (the lowest point of the object
-    # cloud along the table normal, i.e. where the object stands).
+    # cloud along the table normal, i.e. where the object stands). A table
+    # normal tilted more than 20 deg from vertical is a bad plane fit (same
+    # check as reachy_grasp): fall back to world up, or the cell floats.
     normal = geometry.table_normal if geometry.table_normal is not None else np.array([0.0, 0.0, 1.0])
+    if normal[2] / np.linalg.norm(normal) < np.cos(np.radians(20.0)):
+        normal = np.array([0.0, 0.0, 1.0])
     normal, basis_u, basis_v = _table_plane_basis(normal)
     table_level = float(np.min(point_cloud @ normal))
     cell_center = target_point - normal * (float(np.dot(target_point, normal)) - table_level)
@@ -197,6 +228,12 @@ def show_grasp_and_place_plan(geometry, plan, place_plan, target_point: np.ndarr
         point_cloud, corners,
         [pregrasp_pos, grasp_pos, lift_pos, transit_pos, place_pos, retreat_pos],
     ]))
+
+    # Front view of the motion: the carry runs in the vertical plane through
+    # grasp and place, so look at that plane head-on (camera on its horizontal
+    # normal, zero elevation, no perspective) and every waypoint height reads
+    # directly off the z axis, with the object moving left to right.
+    _look_at_motion_plane(ax, grasp_pos, place_pos, fallback_direction=grasp_pos - pregrasp_pos)
 
     _save_fig(fig, f"grasp_place_plan_{geometry.class_name}_{plan.arm_name}")
 
