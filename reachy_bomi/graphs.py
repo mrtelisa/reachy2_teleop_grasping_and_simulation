@@ -24,7 +24,7 @@ def show_point_cloud(point_cloud: np.ndarray, class_name: str) -> None:
     """Non-blocking 3D scatter view of a point cloud (Reachy coords,
     [m]), colored by height. Used for the intermediate pipeline stages
     (raw capture, distortion-corrected, isolated, final) -- see the
-    commented-out calls in reachy_detection.build_object_point_cloud."""
+    calls in reachy_detection.build_object_point_cloud."""
     if point_cloud.shape[0] == 0:
         print("[WARN] Point cloud is empty, nothing to show")
         return
@@ -36,7 +36,6 @@ def show_point_cloud(point_cloud: np.ndarray, class_name: str) -> None:
     ax.set_xlabel("x (m)")
     ax.set_ylabel("y (m)")
     ax.set_zlabel("z (m)")
-    ax.set_title(f"{class_name}: {len(point_cloud)} points")
     fig.colorbar(scatter, ax=ax, shrink=0.6, label="z (m)")
 
     # Equal aspect ratio on all three axes
@@ -79,7 +78,6 @@ def show_grasp_plan(geometry, plan) -> None:
     ax.set_xlabel("x (m)")
     ax.set_ylabel("y (m)")
     ax.set_zlabel("z (m)")
-    ax.set_title(f"{geometry.class_name}: planned grasp ({plan.arm_name})")
     ax.legend(loc="upper left", fontsize=8)
 
     # Equal aspect ratio over the point cloud + waypoints
@@ -145,7 +143,7 @@ def _look_at_motion_plane(ax, start: np.ndarray, end: np.ndarray, fallback_direc
         camera = -camera
     ax.set_proj_type("ortho")
     ax.view_init(elev=20.0, azim=float(np.degrees(np.arctan2(camera[1], camera[0]))))
-    ax.set_box_aspect((1.0, 1.0, 1.0), zoom=1.3)  # fill the figure with the box
+    ax.set_box_aspect((1.0, 1.0, 1.0))
     # the axis seen end-on collapses to a point: drop its ticks and label
     depth_axis = ax.xaxis if abs(camera[0]) >= abs(camera[1]) else ax.yaxis
     depth_axis.set_ticks([])
@@ -218,10 +216,11 @@ def show_grasp_and_place_plan(geometry, plan, place_plan, target_point: np.ndarr
     # Vertical from the place pose down to the cell, to show it is released right over it
     ax.plot(*zip(place_pos, cell_center), c="darkorange", linestyle=":", linewidth=1.0)
 
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_zlabel("z (m)")
-    ax.set_title(f"{geometry.class_name}: grasp and place plan ({plan.arm_name})")
+    # labelpad: in the orthographic front view the tick labels sit right
+    # where the default label goes, and the label lands on top of them
+    ax.set_xlabel("x (m)", labelpad=12)
+    ax.set_ylabel("y (m)", labelpad=12)
+    ax.set_zlabel("z (m)", labelpad=12)
     ax.legend(loc="upper left", fontsize=7)
 
     _set_equal_aspect(ax, np.vstack([

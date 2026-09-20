@@ -51,7 +51,7 @@ import bomi_teleop
 import graphs
 import session_metrics
 
-DEFAULT_ROBOT_IP = "192.168.0.121"
+DEFAULT_ROBOT_IP = "192.168.0.107"
 
 SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds, Repositioning -> object selection
 MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # Control dwells: -> pre-grasp pose, -> object selection
@@ -211,7 +211,7 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
                     break
                 continue
 
-            #graphs.show_grasp_plan(geometry, next(iter(grasp_plans.values())))  # diagnostic plot
+            graphs.show_grasp_plan(geometry, next(iter(grasp_plans.values())))  # diagnostic plot
             target_point, place_arm, crs_x, crs_y = _resolve_and_confirm_place_point(
                 cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
                 depth_cam, reachy, grasp_plans, geometry,

@@ -31,7 +31,7 @@ webcam → MediaPipe → autoencoder cursor → 9-region velocity → reachy2_sd
 - **`reachy_grasp.py`** — grasp planning/execution library: from an `ObjectGeometry` (position, axes, width/height, table normal), computes pre-grasp/grasp/lift end-effector poses and drives the arm through them. Also exposes `is_roughly_reachable`, the cheap single-point reachability check `reachy_selection.py` uses to pre-filter detections.
 - **`camera_viewer.py`** — standalone script that shows a live feed from either the head/teleop camera or the torso/depth camera (`--camera teleop|torso`); spawned by `reachy_control.py` as its own OS process during Control/pre-grasping pose (teleop) and during repositioning (torso), so the camera's network round-trips stay out of the cursor/velocity loop. Its window is moved to a fixed screen position so it lands beside the cursor-map window instead of on top of it.
 - **`stream.py`** — blocking camera live feed used by `camera_viewer.py`.
-- **`graphs.py`** — matplotlib diagnostics (point cloud stages, planned grasp); the calls are commented out in `reachy_detection.py`/`reachy_control.py`, uncomment to inspect.
+- **`graphs.py`** — matplotlib diagnostics (point cloud stages, planned grasp), called from `reachy_detection.py`/`reachy_control.py`; every figure is also saved to `graphs/`.
 - **`safety.py`** — quit/shutdown safety net: a local `quit_requested` check (Q/ESC or window closed, while a cv2 window has focus) plus an OS-level global watcher (`pynput`, works regardless of focus, even mid-`arm.goto`) that triggers `emergency_shutdown`.
 - **`session_metrics.py`** — session metrics (durations, path lengths, region shares, dwells, objects moved) and the 20 Hz odometry log, written to `results_robot/` at the end of every `reachy_control.py` run (`results_training/` for `reachy_training.py`).
 
@@ -181,7 +181,7 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── reachy_grasp.py              # library: grasp planning/execution (pose math, IK search, execute_grasp)
 │   ├── camera_viewer.py             # standalone script: head or torso camera live feed (--camera), spawned by reachy_control.py as its own process
 │   ├── stream.py                    # library: camera-streaming primitives (torso + teleop cameras)
-│   ├── graphs.py                    # library: matplotlib diagnostics (point cloud stages, grasp plan), calls commented out
+│   ├── graphs.py                    # library: matplotlib diagnostics (point cloud stages, grasp plan), figures saved to graphs/
 │   ├── safety.py                    # library: quit/shutdown safety net (local check + OS-level global watcher)
 │   └── yolov8n.pt                   # YOLOv8 weights (auto-downloaded by ultralytics on first run)
 ├── calibrations/                     # shared_calib.npy (raw samples), shared.npz (the AE map), <SUBJECT>_<date>_<time>.npz (per participant); folder tracked via .gitkeep, the files are not
