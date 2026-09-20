@@ -18,9 +18,12 @@ Phases:
   4. Object selection / grasp: capture -> hover-select -> confirm -> pick a
      place point -> confirm -> grasp -> place, then "pick another object?".
      Repositioning (slow driving with the torso camera) can be requested from
-     the selection screen. No at the end runs _finish_session; a failed
-     grasp/place runs _abort_and_shutdown. main()'s finally block always powers
-     the robot off and writes the session metrics (session_metrics.py).
+     the selection screen. No at the end runs _finish_session. An object no
+     arm can grasp (at planning time, or when the re-plan after the place
+     point is chosen fails before the arm moves) asks "select another one?";
+     a grasp/place that fails once the arm is moving runs _abort_and_shutdown.
+     main()'s finally block always powers the robot off and writes the
+     session metrics (session_metrics.py).
 """
 
 import argparse
@@ -128,7 +131,9 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
     """Object selection / grasp loop for one object at a time: capture ->
     hover-select -> confirm -> pick a place point -> confirm -> grasp -> place,
     then "pick another object?" (Yes: fresh capture and loop, No: _finish_session).
-    An object no arm can grasp asks the same question ("object unreachable").
+    An object no arm can grasp asks the same question ("object unreachable"),
+    both when planning finds no grasp and when the re-plan after the place
+    point is chosen fails without the arm ever moving.
     Repositioning can be requested from the selection screen. Quitting anywhere
     else just ends the run; main()'s finally block handles the shutdown."""
     global _grasp_phase_entered
@@ -188,26 +193,11 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
             if not grasp_plans:
                 print(f"[{class_name}] no feasible grasp (too wide for the gripper, "
                       "out of reach, or its pose couldn't be estimated)")
-                want_another, crs_x, crs_y = reachy_selection.confirm_unreachable_object_bomi(
+                captured, crs_x, crs_y = _offer_another_object(
                     cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
-                )
-                if want_another is None:
-                    break
-                if not want_another:
-                    if _metrics is not None:
-                        _metrics.end_test("finished")
-                    _finish_session(reachy, mobile_base)
-                    break
-                # Yes: back to object selection on a fresh capture, base on again for repositioning
-                mobile_base.turn_on()
-                make_window_fullscreen(reachy_detection.CAM_WINDOW_NAME)
-                captured = reachy_detection.capture_and_detect(
-                    depth_cam, model, confidence, reachy_selection.presentable_filter(reachy),
+                    depth_cam, model, confidence, reachy, mobile_base,
                 )
                 if captured is None:
-                    if _metrics is not None:
-                        _metrics.end_test("finished")
-                    _finish_session(reachy, mobile_base)
                     break
                 continue
 
@@ -223,13 +213,23 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
             safety.destroy_window(reachy_detection.CAM_WINDOW_NAME)
             start_camera_viewer(robot_ip)
 
-            plan, place_plan = _replan_and_execute_grasp(reachy, geometry, target_point, place_arm)
-            if plan is None:
-                _abort_and_shutdown(
-                    reachy, mobile_base,
-                    f"[{class_name}] {place_arm} couldn't execute a grasp after {MAX_GRASP_ATTEMPTS} attempts",
-                )
+            try:
+                plan, place_plan = _replan_and_execute_grasp(reachy, geometry, target_point, place_arm)
+            except reachy_grasp.GraspInterrupted as exc:
+                _abort_and_shutdown(reachy, mobile_base, f"[{class_name}] {exc}")
                 break
+            if plan is None:
+                # Nothing has moved: treat it like an unreachable object and
+                # offer another one instead of ending the run
+                print(f"[{class_name}] {place_arm} couldn't plan a grasp after {MAX_GRASP_ATTEMPTS} attempts")
+                stop_camera_viewer()
+                captured, crs_x, crs_y = _offer_another_object(
+                    cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
+                    depth_cam, model, confidence, reachy, mobile_base,
+                )
+                if captured is None:
+                    break
+                continue
             graphs.show_grasp_and_place_plan(geometry, plan, place_plan, target_point,
                                              cell_size_m=reachy_selection.PLACE_GRID_CELL_SIZE_M)  # diagnostic plot
             if not _place_object(reachy, place_plan):
@@ -264,6 +264,36 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
         return crs_x, crs_y
     finally:
         safety.destroy_window(reachy_detection.CAM_WINDOW_NAME)
+
+
+def _offer_another_object(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
+                          depth_cam, model, confidence, reachy, mobile_base) -> tuple:
+    """"Object unreachable, select another one?" after a grasp could not be
+    planned (the arm has not moved). Yes: base back on for repositioning and a
+    fresh capture for object selection; No: end-of-session wind-down. Returns
+    (captured, crs_x, crs_y), captured None when the grasp loop must stop
+    (quit, No, or a failed capture -- the latter two already wound down)."""
+    want_another, crs_x, crs_y = reachy_selection.confirm_unreachable_object_bomi(
+        cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
+    )
+    if want_another is None:
+        return None, crs_x, crs_y
+    if not want_another:
+        if _metrics is not None:
+            _metrics.end_test("finished")
+        _finish_session(reachy, mobile_base)
+        return None, crs_x, crs_y
+
+    mobile_base.turn_on()
+    make_window_fullscreen(reachy_detection.CAM_WINDOW_NAME)
+    captured = reachy_detection.capture_and_detect(
+        depth_cam, model, confidence, reachy_selection.presentable_filter(reachy),
+    )
+    if captured is None:
+        if _metrics is not None:
+            _metrics.end_test("finished")
+        _finish_session(reachy, mobile_base)
+    return captured, crs_x, crs_y
 
 
 def _resolve_and_confirm_place_point(
@@ -306,7 +336,9 @@ def _replan_and_execute_grasp(reachy, geometry, target_point, arm_name: str) -> 
     """plan_grasp -> plan_place -> execute_grasp for arm_name (the arm the chosen
     placement cell needs), up to MAX_GRASP_ATTEMPTS. execute_grasp only moves
     once its IK pre-check passes, so a failed attempt never leaves the arm
-    mid-motion. Returns (plan, place_plan), or (None, None) if all attempts failed."""
+    mid-motion. Returns (plan, place_plan), or (None, None) if all attempts
+    failed without moving; a reachy_grasp.GraspInterrupted (the arm did start
+    moving) propagates to the caller."""
     for attempt in range(1, MAX_GRASP_ATTEMPTS + 1):
         plan = reachy_grasp.plan_grasp(reachy, geometry, arm_name=arm_name)
         if plan is None:
@@ -354,9 +386,10 @@ def _finish_session(reachy, mobile_base) -> None:
 
 
 def _abort_and_shutdown(reachy, mobile_base, reason: str) -> None:
-    """A grasp/place failed to complete (unreachable pose or a RuntimeError
-    mid-motion): report it, back the base up and rotate it, then power the
-    robot off right away instead of pretending the run can continue."""
+    """A grasp/place failed once the arm was already moving (GraspInterrupted
+    or an unreachable place pose): report it, back the base up and rotate it,
+    then power the robot off right away instead of pretending the run can
+    continue. A grasp that merely could not be planned never gets here."""
     print(f"[ERROR] {reason} -- plan aborted")
     if _metrics is not None:
         _metrics.end_test("aborted: " + reason)

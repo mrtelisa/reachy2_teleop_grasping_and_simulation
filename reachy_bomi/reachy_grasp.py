@@ -71,6 +71,12 @@ class ObjectGeometry(NamedTuple):
     point_cloud: npt.NDArray[np.float64]  # (N, 3), isolated object points, for show_grasp_plan
 
 
+class GraspInterrupted(RuntimeError):
+    """execute_grasp failed after the arm had already started moving (a goto
+    or gripper command raised), so the arm may be mid-motion or holding the
+    object: unlike a False return, the caller cannot just retry or move on."""
+
+
 class GraspPlan(NamedTuple):
     arm_name: str  # "r_arm" or "l_arm"
     pregrasp_matrix: npt.NDArray[np.float64]  # 4x4, Reachy world frame
@@ -354,7 +360,8 @@ def execute_grasp(reachy: ReachySDK, plan: GraspPlan, duration: float = ARM_GOTO
     """Drives plan.arm_name through open -> pregrasp -> grasp -> close ->
     lift, the head turning to watch the end-effector at each arm.
     Returns False without moving if the arm/gripper isn't available or 
-    any pose is unreachable from the arm's current joints."""
+    any pose is unreachable from the arm's current joints; raises
+    GraspInterrupted if a command fails once the arm is already moving."""
     arm: Optional[Arm] = getattr(reachy, plan.arm_name)
     if arm is None or arm.gripper is None:
         print(f"[ERROR] {plan.arm_name} or its gripper is not available -- grasp not executed")
@@ -382,8 +389,7 @@ def execute_grasp(reachy: ReachySDK, plan: GraspPlan, duration: float = ARM_GOTO
         _look_at_matrix(reachy, plan.lift_matrix, duration)
         arm.goto(plan.lift_matrix, duration=duration, wait=True)
     except RuntimeError as exc:
-        print(f"[ERROR] {plan.arm_name} grasp aborted: {exc}")
-        return False
+        raise GraspInterrupted(f"{plan.arm_name} grasp aborted: {exc}") from exc
 
     print(f"[{plan.arm_name}] grasp sequence done")
     return True
