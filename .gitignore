@@ -13,3 +13,4 @@ results_center_out/
 results_random/
 results_robot/
 results_training/
+reachy_bomi/webcam_mediapipe.py
