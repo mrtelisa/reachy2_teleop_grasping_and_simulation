@@ -54,7 +54,7 @@ import bomi_teleop
 import graphs
 import session_metrics
 
-DEFAULT_ROBOT_IP = "192.168.0.107"
+DEFAULT_ROBOT_IP = "192.168.0.116"
 
 SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds, Repositioning -> object selection
 MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # Control dwells: -> pre-grasp pose, -> object selection
@@ -201,7 +201,7 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
                     break
                 continue
 
-            graphs.show_grasp_plan(geometry, next(iter(grasp_plans.values())))  # diagnostic plot
+            #graphs.show_grasp_plan(geometry, next(iter(grasp_plans.values())))  # diagnostic plot
             target_point, place_arm, crs_x, crs_y = _resolve_and_confirm_place_point(
                 cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
                 depth_cam, reachy, grasp_plans, geometry,
@@ -230,8 +230,8 @@ def _run_grasp_mode(cap, landmarker, bomi_map, cursor_filter, depth_cam, model, 
                 if captured is None:
                     break
                 continue
-            graphs.show_grasp_and_place_plan(geometry, plan, place_plan, target_point,
-                                             cell_size_m=reachy_selection.PLACE_GRID_CELL_SIZE_M)  # diagnostic plot
+            #graphs.show_grasp_and_place_plan(geometry, plan, place_plan, target_point,
+            #                                 cell_size_m=reachy_selection.PLACE_GRID_CELL_SIZE_M)  # diagnostic plot
             if not _place_object(reachy, place_plan):
                 _abort_and_shutdown(reachy, mobile_base, f"[{class_name}] execute_place failed")
                 break
