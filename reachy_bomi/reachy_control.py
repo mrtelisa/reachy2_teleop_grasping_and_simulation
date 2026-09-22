@@ -54,7 +54,7 @@ import bomi_teleop
 import graphs
 import session_metrics
 
-DEFAULT_ROBOT_IP = "192.168.0.116"
+DEFAULT_ROBOT_IP = "172.20.10.2"
 
 SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds, Repositioning -> object selection
 MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # Control dwells: -> pre-grasp pose, -> object selection
