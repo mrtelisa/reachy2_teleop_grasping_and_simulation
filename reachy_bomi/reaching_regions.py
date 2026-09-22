@@ -28,15 +28,26 @@ Trial flow (the participant is told "go to the top-left corner", then
   home goal  -> the disc appears the moment the previous area is entered;
                 reached when the cursor stays inside it HOME_DWELL_S (0.5 s).
                 Its reach_time = disc shown -> entering the disc (return).
-  area goal  -> the disc stays visible until the cursor LEAVES it: that is
+  area goal  -> the disc stays visible until the cursor LEAVES the start
+                circle (START_RADIUS, wider than the disc so that a small
+                tremor on the disc edge does not start the trial): that is
                 the trial start (the disc disappears). The trial ends the
                 moment the cursor enters the area (no dwell), and the disc
                 reappears for the return.
-                Its reach_time = leaving the disc -> entering the area.
-The trajectory of every goal is recorded from its start (leaving the disc /
-disc shown) and the reaching_metrics.py kinematics (normalized_path_length,
-dimensionless_jerk, n_speed_peaks, ...) are computed on it; the whole cursor
-trajectory is saved too.
+                Its reach_time = leaving the start circle -> entering the area.
+                Since the cursor is already moving at the trial start, its
+                reaction_time is ~0 and meaningless (there is no marker of
+                the verbal instruction: the experimenter never touches the PC).
+The trajectory of every goal is recorded from its start (leaving the start
+circle / disc shown) and the reaching_metrics.py kinematics
+(normalized_path_length, dimensionless_jerk, n_speed_peaks, ...) are computed
+on it; the whole cursor trajectory is saved too. For the area goals the
+"blind" metrics are added: first region visited (first_region_correct: was
+it the target?), n_wrong_regions visited before the target, time_to_region
+(trial start -> entering the target region) and search_time (entering the
+region -> entering the area). A region counts as visited only if the cursor
+stays in it at least MIN_VISIT_S: crossing the corner of a side region on
+the diagonal to a corner area is not an error.
 
 The session timer starts when the home is reached for the first time. The
 session ends when every goal has been reached (or on Q/ESC); results
@@ -67,7 +78,7 @@ import numpy as np
 import reaching_center_out as base
 import socket_client as bomi
 from reaching_center_out import CANVAS_W, CANVAS_H, CRS_RADIUS, CURSOR, WHITE, GREEN, BLUE
-from reaching_metrics import compute_trial_metrics, summarize
+from reaching_metrics import METRIC_KEYS, compute_trial_metrics, summarize
 
 # --- Geometry (canvas px) ---
 REGION_X = (0, CANVAS_W / 3.0, 2 * CANVAS_W / 3.0, CANVAS_W)   # column boundaries (400 px wide)
@@ -76,6 +87,10 @@ AREA_SIDE = 140          # square side: the participant cannot see it, so keep i
 AREA_EDGE_MARGIN = 50    # distance of the outer areas from the screen edge
 HOME_REGION = 5
 HOME_RADIUS = base.TGT_RADIUS   # visible disc at the centre (40 px, as the center-out home)
+START_RADIUS = 1.5 * HOME_RADIUS   # an area trial starts when the cursor leaves THIS circle (hysteresis)
+MIN_VISIT_S = 0.25                 # a region counts as visited if the cursor stays in it this long
+BLIND_KEYS = ("first_region", "first_region_correct", "n_wrong_regions", "time_to_region", "search_time")
+AREA_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k != "first_region")   # averaged in the summary
 REGION_NAMES = {1: "top-left", 2: "top", 3: "top-right", 4: "left", 5: "centre (home)",
                 6: "right", 7: "bottom-left", 8: "bottom", 9: "bottom-right"}
 
@@ -127,6 +142,45 @@ def inside_area(area: dict, x: float, y: float) -> bool:
 
 def inside_home(x: float, y: float) -> bool:
     return math.hypot(x - CANVAS_W / 2.0, y - CANVAS_H / 2.0) < HOME_RADIUS
+
+
+def inside_start(x: float, y: float) -> bool:
+    """Inside the (wider) start circle: an area trial has not started yet."""
+    return math.hypot(x - CANVAS_W / 2.0, y - CANVAS_H / 2.0) < START_RADIUS
+
+
+def blind_metrics(samples: list, target_region: int, t_start: float, t_enter: float) -> dict:
+    """Region-level metrics of an area goal from its samples (t, x, y).
+    first_region: the first region (outside the centre) the cursor stayed in
+    for MIN_VISIT_S (the target itself counts at once); first_region_correct:
+    100 if it was the target, else 0; n_wrong_regions: distinct regions
+    visited before the target; time_to_region: t_start -> first sample in the
+    target region; search_time: from there to entering the area."""
+    m = {k: None for k in BLIND_KEYS}
+    if not samples:
+        return m
+    regions = [region_of(x, y) for _, x, y in samples]
+    times = [t for t, _, _ in samples]
+    visited, i = [], 0
+    while i < len(regions):
+        j = i
+        while j + 1 < len(regions) and regions[j + 1] == regions[i]:
+            j += 1
+        r = regions[i]
+        if r != HOME_REGION and (r == target_region or times[j] - times[i] >= MIN_VISIT_S):
+            if not visited or visited[-1] != r:
+                visited.append(r)
+        i = j + 1
+    if visited:
+        m["first_region"] = visited[0]
+        m["first_region_correct"] = 100.0 if visited[0] == target_region else 0.0
+    if target_region in regions:
+        t_region = times[regions.index(target_region)]
+        m["time_to_region"] = t_region - t_start
+        m["n_wrong_regions"] = len(set(visited[:visited.index(target_region)])) if target_region in visited else None
+        if t_enter is not None:
+            m["search_time"] = max(0.0, t_enter - t_region)
+    return m
 
 
 def print_areas(areas: dict, margin: float) -> None:
@@ -240,7 +294,7 @@ class RegionsTest:
             print(f"  goal {n}: HOME (disc shown)")
         else:
             print(f"  goal {n}: region {self.trial['region']} ({REGION_NAMES[self.trial['region']]})"
-                  f"  -> give the instruction; the trial starts when the cursor leaves the disc")
+                  f"  -> give the instruction; the trial starts when the cursor leaves the start circle")
 
     def waiting(self) -> bool:
         """An area goal is current but the cursor has not left the home disc yet."""
@@ -255,10 +309,10 @@ class RegionsTest:
         if self.trial is None or self.end_reason:
             return
         if self.waiting():
-            if inside_home(x, y):
+            if inside_start(x, y):
                 self.trajectory.append((self.trial_i + 1, self.trial["kind"], self.trial["region"], t, x, y, "wait"))
                 return
-            self.t_shown = t   # the cursor left the disc: the area trial starts (and the disc disappears)
+            self.t_shown = t   # the cursor left the start circle: the area trial starts (and the disc disappears)
         self.trajectory.append((self.trial_i + 1, self.trial["kind"], self.trial["region"], t, x, y, "go"))
         self.samples.append((t, x, y))
 
@@ -294,6 +348,8 @@ class RegionsTest:
                                         self.t_shown if started else t, self.t_enter if success else None,
                                         MOTION_ONSET_SPEED, SPEED_PEAK_THRESHOLD, RESAMPLE_HZ)
         t_enter = self.t_enter if success else None
+        blind = blind_metrics(self.samples, tr["region"], self.t_shown, t_enter) \
+            if tr["kind"] == "area" and started else {k: None for k in BLIND_KEYS}
         rel = lambda ts: (ts - self.t0()) if ts is not None else None
         self.results.append({
             "trial": self.trial_i + 1, "kind": tr["kind"], "region": tr["region"],
@@ -308,6 +364,7 @@ class RegionsTest:
             "t_end": rel(t),
             "trial_duration": (t - self.t_shown) if started else None,
             **metrics,   # reach_time = t_enter - t_start, path metrics from t_start
+            **blind,     # area goals only: first_region, first_region_correct, n_wrong_regions, ...
         })
 
     def finish(self, t: float, reason: str = None) -> dict:
@@ -323,10 +380,11 @@ class RegionsTest:
             "n_areas_total": sum(1 for tr in self.trials if tr["kind"] == "area"),
             "session_duration": (t - self.t_session0) if self.t_session0 is not None else 0.0,
             "timestamp": self.timestamp,
-            "areas": summarize(areas),      # centre -> invisible area (what the test measures)
+            # centre -> invisible area (what the test measures); mean_first_region_correct = accuracy %
+            "areas": summarize(areas, keys=AREA_KEYS),
             "homes": summarize(homes),      # area -> back to the centre disc
             # Same statistics per region, over its repetitions
-            "per_region": {str(reg): summarize([r for r in areas if r["region"] == reg])
+            "per_region": {str(reg): summarize([r for r in areas if r["region"] == reg], keys=AREA_KEYS)
                            for reg in sorted({r["region"] for r in areas})},
             "missed": [{"trial": r["trial"], "kind": r["kind"], "region": r["region"], "reason": r["end_reason"]}
                        for r in self.results if not r["success"]],
@@ -337,6 +395,7 @@ class RegionsTest:
                           for k, a in self.areas.items()},
                 "region_sequence": [tr["region"] for tr in self.trials],
                 "home_dwell_s": HOME_DWELL_S, "area_dwell_s": AREA_DWELL_S,
+                "start_radius": START_RADIUS, "min_visit_s": MIN_VISIT_S,
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }
@@ -506,7 +565,9 @@ def main() -> None:
     fmt = lambda v, u="s": f"{v:.2f}{u}" if v is not None else "-"
     print(f"\nSession over ({summary['end_reason']}): {a['n_success']}/{summary['n_areas_total']} areas reached, "
           f"{summary['session_duration']:.0f}s")
-    print(f"  centre -> area: mean time {fmt(a['mean_reach_time'])}, norm. path {fmt(a['mean_normalized_path_length'], '')}")
+    print(f"  centre -> area: mean time {fmt(a['mean_reach_time'])}, norm. path {fmt(a['mean_normalized_path_length'], '')}, "
+          f"first region correct {fmt(a.get('mean_first_region_correct'), '%')}, "
+          f"wrong regions {fmt(a.get('mean_n_wrong_regions'), '')}, search {fmt(a.get('mean_search_time'))}")
     print(f"  area -> centre: mean time {fmt(h['mean_reach_time'])}, norm. path {fmt(h['mean_normalized_path_length'], '')}")
     print(f"  results: {test.base}_trials.csv / _trajectory.csv / _summary.json")
 
