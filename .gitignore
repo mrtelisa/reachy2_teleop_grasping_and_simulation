@@ -14,3 +14,4 @@ results_training/
 results_center_out/
 results_random/
 reachy_bomi/webcam_mediapipe.py
+results_regions/
