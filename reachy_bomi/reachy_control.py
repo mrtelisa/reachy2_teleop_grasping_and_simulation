@@ -61,7 +61,7 @@ MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # Control 
 
 HALVED_SPEED_FACTOR = 0.75   # velocity multiplier once the arms are in the pre-grasp pose
 
-STARTUP_GAZE_PITCH_DEG = -20.0   # neck pitch on power-on (negative = look down)
+STARTUP_GAZE_PITCH_DEG = -40.0   # neck pitch on power-on (negative = look down)
 
 REVERSE_BASE_CM = 20.0   # backward translation before the final 180 deg rotation
 
