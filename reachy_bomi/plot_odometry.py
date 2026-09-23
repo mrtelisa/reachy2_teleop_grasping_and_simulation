@@ -7,7 +7,7 @@ results_training/) to a PNG.
 Top-down view in the odometry frame (reset at the start of a training
 session): the robot starts at the origin heading up the page, x = forward,
 y = left. The path is coloured by driving mode (max speed / reduced speed /
-repositioning), with the start, the end and the heading every few seconds.
+repositioning / transport), with the start, the end and the heading every few seconds.
 
 Usage:
     python3 plot_odometry.py results_training/S000_odometry.csv [-o path.png] [--arrows-every 2]
@@ -26,8 +26,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Driving modes in the order of the test, one categorical colour each
-MODE_LABELS = (("max_speed", "max speed"), ("reduced_speed", "reduced speed"), ("repositioning", "repositioning"))
-MODE_COLORS = {"max_speed": "#2a78d6", "reduced_speed": "#eb6834", "repositioning": "#1baf7a"}
+MODE_LABELS = (("max_speed", "max speed"), ("reduced_speed", "reduced speed"), ("repositioning", "repositioning"),
+               ("transport", "transport"))
+MODE_COLORS = {"max_speed": "#2a78d6", "reduced_speed": "#eb6834", "repositioning": "#1baf7a", "transport": "#8a4fd8"}
 SURFACE, INK, INK_2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e6e5e1"
 
 

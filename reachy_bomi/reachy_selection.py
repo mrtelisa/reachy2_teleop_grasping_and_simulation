@@ -34,7 +34,8 @@ COLOR_BUTTON = (255, 0, 0)
 COLOR_BUTTON_TEXT = (255, 255, 255)
 REPOSITIONING_HOVER_SECONDS = DWELL_HOLD_SECONDS
 
-# Sentinel class_name for "user dwelled on Repositioning" - handled by reachy_control.py
+# Sentinel class_name / target point for "user dwelled on Repositioning" (object
+# selection or placement grid) - handled by reachy_control.py
 REPOSITION_REQUESTED = object()
 
 # --- Free-point placement dwell, on a fixed reachability grid laid out on the
@@ -381,7 +382,9 @@ def select_place_location_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, 
     (cells do not move, so cursor tremor within a cell never resets the dwell).
     Unreachable area never accumulates progress. Confirmed after
     PLACE_HOVER_SECONDS on the same reachable cell: returns (target point
-    [m, world frame], arm_name, crs_x, crs_y), or (None, None, crs_x, crs_y) on quit."""
+    [m, world frame], arm_name, crs_x, crs_y), (REPOSITION_REQUESTED, None,
+    crs_x, crs_y) after REPOSITIONING_HOVER_SECONDS on the Repositioning
+    button, or (None, None, crs_x, crs_y) on quit."""
     base_frame = grid.base_frame
     stride, cell_targets, cell_arms = grid.stride, grid.cell_targets, grid.cell_arms
     coarse_row_img, coarse_col_img, unreachable_mask = grid.coarse_row_img, grid.coarse_col_img, grid.unreachable_mask
@@ -390,9 +393,11 @@ def select_place_location_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, 
 
     tracked_cell = None  # the reachable cell currently accumulating dwell, or None
     hover_start = None
+    button_hover_start = None
 
     print(f"\n=== PLACE LOCATION ===  Q = quit  |  hold the cursor over a spot on the "
-          f"table for {PLACE_HOVER_SECONDS:.0f}s to confirm where to place it (red area isn't reachable)")
+          f"table for {PLACE_HOVER_SECONDS:.0f}s to confirm where to place it (red area isn't reachable)  |  "
+          f"hold Repositioning for {REPOSITIONING_HOVER_SECONDS:.0f}s to reposition")
 
     while True:
         _, crs_x, crs_y, _ = bomi_teleop.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
@@ -401,8 +406,15 @@ def select_place_location_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, 
         coarse_y = min(max(gy // stride, 0), coarse_h - 1)
         coarse_x = min(max(gx // stride, 0), coarse_w - 1)
         rr, cc = int(coarse_row_img[coarse_y, coarse_x]), int(coarse_col_img[coarse_y, coarse_x])
-        current_cell = (rr, cc) if rr != -1 else None
         now = time.time()
+
+        on_button = box_contains(REPOSITIONING_BUTTON_BOX, gx, gy)
+        button_hover_start = (button_hover_start or now) if on_button else None
+        button_progress = min((now - button_hover_start) / REPOSITIONING_HOVER_SECONDS, 1.0) if button_hover_start else 0.0
+        if button_progress >= 1.0:
+            return REPOSITION_REQUESTED, None, crs_x, crs_y
+        # The button covers part of the grid: no cell accumulates dwell under it
+        current_cell = (rr, cc) if rr != -1 and not on_button else None
 
         place_arm = cell_arms.get(current_cell) if current_cell is not None else None
         if place_arm is None:
@@ -422,6 +434,7 @@ def select_place_location_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, 
             frame, unreachable_mask, coarse_row_img, coarse_col_img, stride,
             current_cell, hover_progress, place_arm is not None,
         )
+        draw_repositioning_button(frame, button_progress)
         _draw_bomi_cursor(frame, gx, gy)
         cv2.imshow(reachy_detection.CAM_WINDOW_NAME, frame)
         cv2.setWindowProperty(reachy_detection.CAM_WINDOW_NAME, cv2.WND_PROP_TOPMOST, 1)  # re-pin (same-process windows only)
@@ -483,7 +496,7 @@ def confirm_grasp_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y, c
 
 def confirm_place_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y):
     """Yes/No dwell dialog confirming the dwell-picked placement point, before
-    the grasp is actually executed."""
+    the carried object is actually placed."""
     return confirm_bomi(
         cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
         lines=["You have selected where to place the object.", "Do you want to confirm?"],
@@ -499,12 +512,3 @@ def confirm_unreachable_object_bomi(cap, landmarker, bomi_map, cursor_filter, cr
         lines=["Sorry... object unreachable!", "Do you want to select another one?"],
     )
 
-
-def confirm_new_object_bomi(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y):
-    """Yes/No dwell dialog asked right after a successful placement: Yes loops
-    back into object selection on a fresh capture, No (or quitting) starts the
-    end-of-session wind-down (back up, rotate, power off)."""
-    return confirm_bomi(
-        cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
-        lines=["Object placed.", "Do you want to select a new object?"],
-    )

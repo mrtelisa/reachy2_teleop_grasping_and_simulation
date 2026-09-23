@@ -50,6 +50,12 @@ GRASP_HEIGHT_FRACTION = 3 / 5
 # How many horizontal approach directions is_roughly_reachable tries
 QUICK_REACHABILITY_CANDIDATE_COUNT = 8
 
+# Carry pose after the grasp: the holding arm retracts to the SDK's "elbow_90"
+# posture (elbow pitch below), gripper kept in the orientation it grasped with
+CARRY_ELBOW_PITCH_DEG = -120.0
+# Wrist joints tried by forward kinematics to locate the wrist centre (see _wrist_offset)
+_WRIST_PROBE_DEG = ((0.0, 0.0, 0.0), (20.0, 0.0, 0.0), (0.0, 20.0, 0.0), (0.0, 0.0, 20.0))
+
 # XY distance from the base axis past which plan_place rejects a target before
 # any IK. Deliberately generous: too large only wastes time on hopeless poses,
 # too small would refuse reachable ones.
@@ -72,7 +78,7 @@ class ObjectGeometry(NamedTuple):
 
 
 class GraspInterrupted(RuntimeError):
-    """execute_grasp failed after the arm had already started moving (a goto
+    """execute_grasp/execute_place failed after the arm had already started moving (a goto
     or gripper command raised), so the arm may be mid-motion or holding the
     object: unlike a False return, the caller cannot just retry or move on."""
 
@@ -429,12 +435,77 @@ def place_back(reachy: ReachySDK, plan: GraspPlan, duration: float = ARM_GOTO_DU
     return True
 
 
+def _wrist_offset(arm: Arm, joints: List[float]) -> npt.NDArray[np.float64]:
+    """End-effector offset from the wrist centre, in the end-effector's own frame:
+    the wrist centre c stays put whatever the 3 wrist joints are, so with
+    p_i = c + R_i @ d for every wrist probe, d solves (R_i - R_0) d = p_i - p_0."""
+    poses = []
+    for wrist in _WRIST_PROBE_DEG:
+        probe = list(joints[:4]) + list(wrist)
+        poses.append(arm.forward_kinematics(probe, degrees=True))
+    rot_0, pos_0 = poses[0][:3, :3], poses[0][:3, 3]
+    lhs = np.vstack([pose[:3, :3] - rot_0 for pose in poses[1:]])
+    rhs = np.concatenate([pose[:3, 3] - pos_0 for pose in poses[1:]])
+    offset, *_ = np.linalg.lstsq(lhs, rhs, rcond=None)
+    return offset
+
+
+def plan_carry(reachy: ReachySDK, plan: GraspPlan) -> Optional[npt.NDArray[np.float64]]:
+    """4x4 carry pose for the arm holding the object: shoulder/elbow as in the
+    "elbow_90" posture (elbow pitch CARRY_ELBOW_PITCH_DEG), gripper in the
+    orientation it grasped with -- the wrist centre of that posture, with the
+    end-effector placed around it in plan's orientation. None if the arm
+    can't hold that orientation there (wrist limits)."""
+    arm: Optional[Arm] = getattr(reachy, plan.arm_name, None)
+    if arm is None:
+        return None
+    joints = arm.get_default_posture_joints(common_posture="elbow_90")
+    joints[3] = CARRY_ELBOW_PITCH_DEG
+
+    offset = _wrist_offset(arm, joints)
+    elbow_pose = arm.forward_kinematics(joints, degrees=True)
+    wrist_centre = elbow_pose[:3, 3] - elbow_pose[:3, :3] @ offset
+
+    rotation = plan.lift_matrix[:3, :3]
+    carry_matrix = _pose_matrix(rotation, wrist_centre + rotation @ offset)
+    try:
+        arm.inverse_kinematics(carry_matrix, q0=joints)
+    except ValueError:
+        return None
+    return carry_matrix
+
+
+def execute_carry(reachy: ReachySDK, plan: GraspPlan, duration: float = ARM_GOTO_DURATION_S) -> bool:
+    """After execute_grasp: retract the holding arm from the lift pose to its
+    carry pose (plan_carry), cartesian so the gripper keeps its orientation
+    all the way. Returns False without moving if there is no carry pose (the
+    arm then stays at the lift pose); raises GraspInterrupted if the goto fails
+    once the arm is moving."""
+    arm: Optional[Arm] = getattr(reachy, plan.arm_name, None)
+    carry_matrix = plan_carry(reachy, plan) if arm is not None else None
+    if carry_matrix is None:
+        print(f"[WARN] {plan.arm_name} can't hold the grasp orientation with the elbow at "
+              f"{CARRY_ELBOW_PITCH_DEG:.0f} deg -- staying at the lift pose")
+        return False
+
+    try:
+        print(f"[{plan.arm_name}] retracting to the carry pose (elbow {CARRY_ELBOW_PITCH_DEG:.0f} deg)...")
+        _look_at_matrix(reachy, carry_matrix, duration)
+        arm.goto(carry_matrix, duration=duration, interpolation_space="cartesian_space", wait=True)
+    except RuntimeError as exc:
+        raise GraspInterrupted(f"{plan.arm_name} carry retraction aborted: {exc}") from exc
+
+    print(f"[{plan.arm_name}] carry pose reached (elbow pitch {arm.get_current_positions()[3]:.0f} deg)")
+    return True
+
+
 def execute_place(reachy: ReachySDK, place_plan: GraspPlan, duration: float = ARM_GOTO_DURATION_S) -> bool:
     """Carry the held object to place_plan: joint-space transit above the target
     (the wrist may need to rotate on the way), cartesian descent, gripper
     open, cartesian retreat along the gripper axis; the head tracks the
-    end-effector. Returns False without moving if a pose is unreachable, or
-    partway through if a goto raises."""
+    end-effector. Returns False without moving if the arm/gripper isn't
+    available or a pose is unreachable from the arm's current joints; raises
+    GraspInterrupted if a command fails once the arm is already moving."""
     arm: Optional[Arm] = getattr(reachy, place_plan.arm_name, None)
     if arm is None or arm.gripper is None:
         print(f"[ERROR] {place_plan.arm_name} or its gripper is not available -- place not executed")
@@ -462,8 +533,7 @@ def execute_place(reachy: ReachySDK, place_plan: GraspPlan, duration: float = AR
         _look_at_matrix(reachy, place_plan.pregrasp_matrix, duration)
         arm.goto(place_plan.pregrasp_matrix, duration=duration, interpolation_space="cartesian_space", wait=True)
     except RuntimeError as exc:
-        print(f"[ERROR] {place_plan.arm_name} place aborted: {exc}")
-        return False
+        raise GraspInterrupted(f"{place_plan.arm_name} place aborted: {exc}") from exc
 
     print(f"[{place_plan.arm_name}] place sequence done")
     return True

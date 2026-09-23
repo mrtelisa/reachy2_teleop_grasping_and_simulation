@@ -2,13 +2,13 @@
 Session metrics of a reachy_control.py run (or a reachy_training.py one),
 written to results_robot/<subject>_session.json (_1, _2, ... for later
 sessions; results_training/ for the training). Test = from Control start
-(after the cursor preview) to the "No" to "pick another object?". Positions
+(after the cursor preview) to the placement of the carried object. Positions
 come from the mobile base odometry.
 
   test_duration, navigation_duration   navigation = up to the first object selection
   n_repositioning                      repositioning navigations used
   objects_moved                        objects picked and placed
-  path_length_max_speed / _reduced_speed / _repositioning / _navigation / _total  [m]
+  path_length_max_speed / _reduced_speed / _repositioning / _transport / _navigation / _total  [m]
   optimal_path_length, normalized_path_length   navigation path / DEFAULT_OPTIMAL_PATH_LENGTH
   log_dimensionless_jerk               navigation smoothness (Hogan & Sternad 2009)
   region_time_percent                  driving time per region, dwells removed from region 5
@@ -17,7 +17,7 @@ come from the mobile base odometry.
 Every odometry sample taken while driving (control-loop rate, PUBLISH_HZ =
 20 Hz) is also written as is to <subject>_odometry.csv next to the json:
 t (unix), t_test (s since test start), x, y [m], theta [rad], vx, vy [m/s],
-vtheta [rad/s], mode (max_speed / reduced_speed / repositioning).
+vtheta [rad/s], mode (max_speed / reduced_speed / repositioning / transport).
 """
 
 import csv
@@ -39,7 +39,8 @@ DEFAULT_OPTIMAL_PATH_LENGTH = None
 MODE_MAX = "max_speed"
 MODE_REDUCED = "reduced_speed"
 MODE_REPOSITIONING = "repositioning"
-MODES = (MODE_MAX, MODE_REDUCED, MODE_REPOSITIONING)
+MODE_TRANSPORT = "transport"   # driving with the grasped object in hand, towards the placement table
+MODES = (MODE_MAX, MODE_REDUCED, MODE_REPOSITIONING, MODE_TRANSPORT)
 
 JERK_RESAMPLE_HZ = 20.0   # odometry is sampled at the control loop rate (PUBLISH_HZ)
 REGIONS = tuple(range(1, 10))
@@ -152,7 +153,7 @@ class SessionMetrics:
     # --- odometry ---
     def sample(self, odom: dict, mode: str) -> None:
         """odom: mobile_base.get_current_odometry() dict (x, y in metres);
-        mode: MODE_MAX / MODE_REDUCED / MODE_REPOSITIONING, the driving mode the
+        mode: MODE_MAX / MODE_REDUCED / MODE_REPOSITIONING / MODE_TRANSPORT, the driving mode the
         base is in right now. Call it at the control-loop rate while driving."""
         if self.t_test_start is None or self.t_test_end is not None:
             return
@@ -212,6 +213,7 @@ class SessionMetrics:
             "path_length_max_speed": self.path[MODE_MAX],
             "path_length_reduced_speed": self.path[MODE_REDUCED],
             "path_length_repositioning": self.path[MODE_REPOSITIONING],
+            "path_length_transport": self.path[MODE_TRANSPORT],
             "path_length_navigation": nav_path,
             "path_length_total": sum(self.path.values()),
             "optimal_path_length": self.optimal_path_m,
