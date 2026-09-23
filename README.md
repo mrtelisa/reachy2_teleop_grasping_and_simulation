@@ -111,6 +111,36 @@ Metrics for region goals only:
 
 ---
 
+## 3-target blind reaching test (pre / post training)
+
+```bash
+python3 reaching_blind.py --subject S001 --phase pre   # before the training
+python3 reaching_regions.py --subject S001             # training
+python3 reaching_blind.py --subject S001 --phase post  # after the training
+```
+
+During the test the cursor is **never shown**. Three blue target circles (radius 60 px) are always on screen, and the current one turns **yellow**. Every **5 s** (`TRIAL_S`) the current target changes, whatever the cursor did. The cursor is still tracked, so the results show whether the participant got there from the learned map alone.
+
+- There are **12 trials**: each of the 3 targets 4 times, all 3 once before any repeat, never twice in a row. Positions (one per third of the screen width, at least 400 px apart and 250 px apart vertically between the highest and the lowest) and order are drawn at random (seeded) and frozen in [`config/blind_targets.csv`](config/blind_targets.csv) (`trial,target,x,y`), so the pre and post sessions, and every participant, get the same targets.
+- Before the start the cursor is visible, so the participant can see where the hand is. After 2 s (`START_CURSOR_S`), `ENTER` (experimenter) starts the session and the cursor disappears. `Q`/`Esc` aborts it, and the results so far are still saved.
+- The dot in the top-right corner is green while the hand is tracked and grey when tracking is lost. It shows no position.
+- `--show-cursor` draws the cursor. Use it only to test the setup, never with a participant.
+
+Results go to `results_blind/<subject>_blind_<phase>_{trials,blocks,trajectory}.csv` and `_summary.json`. The blocks file has one row per block of 3 trials (each target once). A **post** session is compared with the subject's latest **pre** session: the differences (post − pre) of the main metrics are printed and stored under `comparison_with_pre` in the summary.
+
+Per-trial metrics (canvas px, distances from the target centre). The `reaching_metrics.py` kinematics are also computed, up to the first entry:
+
+| Metric | Meaning |
+|---|---|
+| `hit`, `reach_time` | 100 if the cursor entered the target circle, and the time to the first entry |
+| `time_in_target`, `on_target_at_end` | % of the 5 s inside the circle, and 100 if inside when the target changes |
+| `initial_error`, `final_error`, `end_error`, `min_error` | distance when shown, when the target changes, mean over the last 1 s, and closest approach |
+| `relative_final_error` | `final_error / initial_error` (0 = perfect, 1 = did not get closer) |
+| `chosen_target`, `chosen_correct` | the target closest to the cursor when the target changes, and 100 if it is the current one |
+| `hand_lost` | % of the trial without a tracked hand |
+
+---
+
 ## Package layout
 
 ```
@@ -121,9 +151,11 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── customize_bomi.py       # per participant: rotate/flip/scale/offset the shared map -> calibrations/<SUBJECT>_<date>_<time>.npz
 │   ├── load_bomi.py            # try a participant's / any saved map on the fullscreen cursor map
 │   ├── reaching_regions.py     # 9-region blind reaching test
+│   ├── reaching_blind.py       # 3-target blind reaching test, pre/post training
 │   └── reaching_metrics.py     # per-trial kinematic metrics
 ├── config/
-│   └── cursor_regions.csv      # frozen region sequence of the test (96 targets)
+│   ├── cursor_regions.csv      # frozen region sequence of the training (96 targets)
+│   └── blind_targets.csv       # frozen targets of the pre/post blind test (12 trials)
 ├── scripts/
 │   └── hand_landmarker.task    # MediaPipe model (tracked, see Requirements)
 ├── calibrations/               # shared_calib.npy, shared.npz, <SUBJECT>_<date>_<time>.npz (not tracked)

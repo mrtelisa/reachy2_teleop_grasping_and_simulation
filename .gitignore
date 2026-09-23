@@ -7,4 +7,8 @@ __pycache__/
 *.png
 # Blind reaching test outputs (reaching_regions.py)
 results_regions/
+results_training/
+results_robot/
+results_regions
 reachy_bomi/webcam_mediapipe.py
+results_blind/
