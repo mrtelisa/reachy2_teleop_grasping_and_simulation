@@ -10,7 +10,9 @@ teleoperation interface (3 x 3 grid):
     1 | 2 | 3   (top row)
     4 | 5 | 6   (middle row)
     7 | 8 | 9   (bottom row)
-Region 5 is the HOME: a disc at the screen centre (radius HOME_RADIUS).
+Region 5 is the HOME: a disc at the screen centre (radius HOME_RADIUS); the
+target of every outer region is a (larger) circle of radius TARGET_RADIUS
+at the centre of that region.
 
 Sequence: config/cursor_regions.csv, one region per row, e.g.
     5, 1, 5, 2, 5, 3 ...   = home, region 1, home, region 2, ...
@@ -20,24 +22,24 @@ outer region N_REPETITIONS (12) times -> 96 targets, in seeded random order
 each.
 
 Trial flow:
-  home goal   -> the disc is shown (the target region is not); reached when
+  home goal   -> the disc is shown (no target); reached when
                  the cursor stays inside it HOME_DWELL_S (0.5 s).
                  reach_time = disc shown -> entering the disc.
   region goal -> starts the moment the home is reached: the disc disappears
-                 and the border of the target region is coloured. For the
-                 first HIDDEN_S (1 s) the cursor is NOT drawn (no visual
-                 feedback: can the participant reach the region from the map
-                 alone?), then it reappears. The goal is reached the moment
-                 the cursor enters the region (no dwell), hidden or not, and
-                 the disc is shown again for the return.
-                 reach_time = region shown -> entering the region.
+                 and the target circle at the centre of the region is shown
+                 (yellow). For the first HIDDEN_S (1 s) the cursor is NOT
+                 drawn (no visual feedback: can the participant reach the
+                 target from the map alone?), then it reappears. The goal is
+                 reached the moment the cursor enters the circle (no dwell),
+                 hidden or not, and the disc is shown again for the return.
+                 reach_time = target shown -> entering the circle.
 The session timer starts when the cursor enters the home disc for the first
 time. The session ends when every goal has been reached (or on Q/ESC).
 
 Metrics of every goal: the reaching_metrics.py kinematics
 (reaction_time, normalized_path_length, dimensionless_jerk, n_speed_peaks,
 ...; the ideal target point of a region is its centre). Region goals also get:
-  reached_hidden            100 if the region was entered while the cursor was
+  reached_hidden            100 if the circle was entered while the cursor was
                             still hidden, else 0
   region_at_reveal          region of the cursor when it reappears (the target
                             if it was reached while hidden)
@@ -84,6 +86,7 @@ REGION_X = (0, CANVAS_W / 3.0, 2 * CANVAS_W / 3.0, CANVAS_W)   # column boundari
 REGION_Y = (0, CANVAS_H / 3.0, 2 * CANVAS_H / 3.0, CANVAS_H)   # row boundaries (216.7 px high)
 HOME_REGION = 5
 HOME_RADIUS = 40
+TARGET_RADIUS = 70       # target circle at the centre of each outer region
 REGION_NAMES = {1: "top-left", 2: "top", 3: "top-right", 4: "left", 5: "centre (home)",
                 6: "right", 7: "bottom-left", 8: "bottom", 9: "bottom-right"}
 
@@ -95,7 +98,7 @@ BLOCK_SIZE = 8           # statistics per block of 8 consecutive targets (= one 
 
 # --- Timing ---
 HOME_DWELL_S = 0.5       # the cursor must stay on the home disc this long
-HIDDEN_S = 1.0           # the cursor is not drawn for this long after the target region is shown
+HIDDEN_S = 1.0           # the cursor is not drawn for this long after the target is shown
 MIN_VISIT_S = 0.25       # a region counts as visited if the cursor stays in it this long
 
 # --- Metrics (pixels of the canvas) ---
@@ -115,7 +118,7 @@ WHITE = (255, 255, 255)
 GREEN = (0, 255, 0)
 BLUE = (255, 80, 0)
 GRID = (90, 90, 90)
-TARGET = (0, 255, 255)   # border of the target region
+TARGET = (0, 255, 255)   # target circle
 CURSOR = (int(0.4 * 255), int(0.65 * 255), int(0.19 * 255))   # markerlessBoMI CURSOR, RGB -> BGR
 
 
@@ -134,6 +137,10 @@ def region_bounds(region: int) -> tuple:
 
 def inside_home(x: float, y: float) -> bool:
     return math.hypot(x - CANVAS_W / 2.0, y - CANVAS_H / 2.0) < HOME_RADIUS
+
+
+def inside_target(trial: dict, x: float, y: float) -> bool:
+    return math.hypot(x - trial["x"], y - trial["y"]) < TARGET_RADIUS
 
 
 def visited_regions(samples: list, target_region: int) -> list:
@@ -272,7 +279,7 @@ class RegionsTest:
         self.t_session0 = None
         self.trial_i = -1
         self.trial = None
-        self.t_shown = None   # goal shown: disc (home) / coloured region border (region)
+        self.t_shown = None   # goal shown: disc (home) / target circle (region)
         self.t_enter = None
         self.samples = []
         self.end_reason = None
@@ -318,7 +325,7 @@ class RegionsTest:
                     self._end_trial(t)
             else:
                 self.t_enter = None
-        elif region_of(x, y) == self.trial["region"]:
+        elif inside_target(self.trial, x, y):
             self.t_enter = t
             self._end_trial(t)
 
@@ -385,6 +392,7 @@ class RegionsTest:
                        for r in self.results if not r["success"]],
             "config": {
                 "canvas": [CANVAS_W, CANVAS_H], "crs_radius": CRS_RADIUS, "home_radius": HOME_RADIUS,
+                "target_radius": TARGET_RADIUS,
                 "region_sequence": [tr["region"] for tr in self.trials],
                 "home_dwell_s": HOME_DWELL_S, "hidden_s": HIDDEN_S, "min_visit_s": MIN_VISIT_S,
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
@@ -442,11 +450,8 @@ class Screen:
                 colour = BLUE if test.t_enter is not None else GREEN
                 cv2.circle(img, self.to_screen(CANVAS_W / 2.0, CANVAS_H / 2.0), self.px(HOME_RADIUS), colour, self.px(2))
             else:
-                # Border of the target region, drawn inside it so it is fully visible at the screen edges
-                rx0, ry0, rx1, ry1 = region_bounds(test.trial["region"])
-                inset = 4
-                cv2.rectangle(img, self.to_screen(rx0 + inset, ry0 + inset), self.to_screen(rx1 - inset, ry1 - inset),
-                              TARGET, self.px(6))
+                cv2.circle(img, self.to_screen(test.trial["x"], test.trial["y"]), self.px(TARGET_RADIUS),
+                           TARGET, self.px(3))
         if test.cursor_visible(t):
             cv2.circle(img, self.to_screen(crs_x, crs_y), self.px(CRS_RADIUS), CURSOR if hand_detected else GRID, -1)
         elapsed = (t - test.t_session0) if test.t_session0 is not None else 0.0

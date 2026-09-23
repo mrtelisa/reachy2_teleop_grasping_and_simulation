@@ -69,15 +69,15 @@ The 1200×650 canvas is scaled to the whole screen (the map's 2550×1500 space i
 ```
  1 | 2 | 3
  4 | 5 | 6      5 = home: a disc (radius 40 px) at the centre
- 7 | 8 | 9
+ 7 | 8 | 9      each outer region: a target circle (radius 70 px) at its centre
 ```
 
 The sequence alternates home -> region -> home -> region .... There are **96 targets**, each of the 8 outer regions 12 times, in a seeded random order: every region appears once before any repeat, and never twice in a row. The sequence is frozen in [`config/cursor_regions.csv`](config/cursor_regions.csv), so it is the same for every participant. It is regenerated only if the file is missing (`N_REPETITIONS` in the script).
 
 How a session runs:
 1. **Home**: the centre disc is shown. It is reached when the cursor stays inside it for **0.5 s**. The **session timer starts the first time the cursor enters the disc**.
-2. **Region**: as soon as the home is reached, the disc disappears and the **border of the target region is coloured**. For the first **1 s** (`HIDDEN_S`) the **cursor is not drawn**. The goal is to see whether the participant can reach the region from the learned map alone, without visual feedback. After that second the cursor reappears.
-3. The target is reached **as soon as the cursor enters the region**, whether it is still hidden or not. The centre disc is then shown again for the return.
+2. **Region**: as soon as the home is reached, the disc disappears and the **yellow target circle at the centre of the region** is shown. For the first **1 s** (`HIDDEN_S`) the **cursor is not drawn**. The goal is to see whether the participant can reach the target from the learned map alone, without visual feedback. After that second the cursor reappears.
+3. The target is reached **as soon as the cursor enters the circle** (`TARGET_RADIUS`), whether it is still hidden or not. The centre disc is then shown again for the return.
 4. The session ends when every goal has been reached, or on `Q`/`Esc`.
 
 Results go to `results_regions/`. A subject with previous sessions gets `_1`, `_2`, ... appended to the file names.
@@ -89,11 +89,11 @@ Results go to `results_regions/`. A subject with previous sessions gets `_1`, `_
 | `<subject>_regions_trajectory.csv` | every cursor sample: trial, kind, region, t, x, y, `cursor_visible` |
 | `<subject>_regions_summary.json` | means over all region goals, the returns, per region and per block, plus the config |
 
-Metrics for every goal ([`reaching_metrics.py`](reachy_bomi/reaching_metrics.py), in canvas px). For a region goal, the ideal target point is the centre of the region.
+Metrics for every goal ([`reaching_metrics.py`](reachy_bomi/reaching_metrics.py), in canvas px). For a region goal, the ideal target point is the centre of its target circle.
 
 | Metric | Meaning |
 |---|---|
-| `reach_time` | goal shown -> entering the region (or the disc) |
+| `reach_time` | goal shown -> entering the target circle (or the home disc) |
 | `reaction_time`, `movement_time` | goal shown -> movement onset, and onset -> entering |
 | `path_length`, `normalized_path_length` | path / straight-line displacement (1 = perfectly straight) |
 | `max_deviation` | max perpendicular distance from the ideal line onset -> goal centre |
@@ -104,7 +104,7 @@ Metrics for region goals only:
 
 | Metric | Meaning |
 |---|---|
-| `reached_hidden` | 100 if the region was entered while the cursor was still hidden, else 0 |
+| `reached_hidden` | 100 if the target circle was entered while the cursor was still hidden, else 0 |
 | `region_at_reveal`, `region_at_reveal_correct` | region of the cursor when it reappears, and 100 if it is the target |
 | `first_region`, `first_region_correct` | first region visited, i.e. stayed in for at least 0.25 s (the target counts at once), and 100 if it is the target |
 | `n_wrong_regions` | distinct other regions visited before the target |
