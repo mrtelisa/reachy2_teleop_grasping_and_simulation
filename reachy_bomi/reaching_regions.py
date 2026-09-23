@@ -1,65 +1,63 @@
 #!/usr/bin/env python3
 """
-Fullscreen 9-region cursor test -- no robot, no socket, no velocities.
+Fullscreen 9-region blind reaching test.
 
-Same hand -> cursor chain, canvas (1200 x 650, scaled to the whole screen),
-cursor and metrics as reaching_center_out.py, but the screen is
-divided in the 9 regions of the teleoperation interface (3 x 3 grid) and the
-targets are INVISIBLE: one square AREA per region (its coordinates are saved),
-which the participant has to enter following the experimenter's verbal
-instruction ("go to the top-left corner").
-
-Regions / areas:
+The hand drives an on-screen cursor through the BoMI chain of bomi.py
+(webcam -> MediaPipe -> autoencoder map -> Butterworth filter); the map's
+BASE_WIDTH x BASE_HEIGHT space is scaled onto a 1200 x 650 canvas, itself
+scaled to the whole screen. The canvas is divided in the 9 regions of the
+teleoperation interface (3 x 3 grid):
     1 | 2 | 3   (top row)
     4 | 5 | 6   (middle row)
     7 | 8 | 9   (bottom row)
-Areas are squares of AREA_SIDE canvas px: the ones in the outer regions are
-pushed towards the screen edge (AREA_EDGE_MARGIN px from it). Region 5 is the
-HOME: a visible disc at the screen centre (radius HOME_RADIUS), the only
-thing the participant sees besides the grid and the cursor.
+Region 5 is the HOME: a disc at the screen centre (radius HOME_RADIUS).
 
 Sequence: config/cursor_regions.csv, one region per row, e.g.
-    5, 1, 5, 2, 5, 3 ...   = home, area 1, home, area 2, ...
+    5, 1, 5, 2, 5, 3 ...   = home, region 1, home, region 2, ...
 (any other file with --sequence). It is generated once if missing: every
-outer region N_REPETITIONS times in seeded random order, a home between them.
+outer region N_REPETITIONS (12) times -> 96 targets, in seeded random order
+(all 8 once before any repeat, never the same twice in a row), a home before
+each.
 
-Trial flow (the participant is told "go to the top-left corner", then
-"back to the centre"; nothing has to be pressed):
-  home goal  -> the disc appears the moment the previous area is entered;
-                reached when the cursor stays inside it HOME_DWELL_S (0.5 s).
-                Its reach_time = disc shown -> entering the disc (return).
-  area goal  -> the disc stays visible until the cursor LEAVES the start
-                circle (START_RADIUS, wider than the disc so that a small
-                tremor on the disc edge does not start the trial): that is
-                the trial start (the disc disappears). The trial ends the
-                moment the cursor enters the area (no dwell), and the disc
-                reappears for the return.
-                Its reach_time = leaving the start circle -> entering the area.
-                Since the cursor is already moving at the trial start, its
-                reaction_time is ~0 and meaningless (there is no marker of
-                the verbal instruction: the experimenter never touches the PC).
-The trajectory of every goal is recorded from its start (leaving the start
-circle / disc shown) and the reaching_metrics.py kinematics
-(normalized_path_length, dimensionless_jerk, n_speed_peaks, ...) are computed
-on it; the whole cursor trajectory is saved too. For the area goals the
-"blind" metrics are added: first region visited (first_region_correct: was
-it the target?), n_wrong_regions visited before the target, time_to_region
-(trial start -> entering the target region) and search_time (entering the
-region -> entering the area). A region counts as visited only if the cursor
-stays in it at least MIN_VISIT_S: crossing the corner of a side region on
-the diagonal to a corner area is not an error.
+Trial flow:
+  home goal   -> the disc is shown (the target region is not); reached when
+                 the cursor stays inside it HOME_DWELL_S (0.5 s).
+                 reach_time = disc shown -> entering the disc.
+  region goal -> starts the moment the home is reached: the disc disappears
+                 and the border of the target region is coloured. For the
+                 first HIDDEN_S (1 s) the cursor is NOT drawn (no visual
+                 feedback: can the participant reach the region from the map
+                 alone?), then it reappears. The goal is reached the moment
+                 the cursor enters the region (no dwell), hidden or not, and
+                 the disc is shown again for the return.
+                 reach_time = region shown -> entering the region.
+The session timer starts when the cursor enters the home disc for the first
+time. The session ends when every goal has been reached (or on Q/ESC).
 
-The session timer starts when the home is reached for the first time. The
-session ends when every goal has been reached (or on Q/ESC); results
-(a subject with previous sessions gets _1, _2, ... appended):
-  results_regions/<subject>_regions_trials.csv       one row per goal (times, metrics)
-  results_regions/<subject>_regions_trajectory.csv   every cursor sample (trial, t, x, y)
-  results_regions/<subject>_regions_summary.json     means (areas, returns, per region), config
+Metrics of every goal: the reaching_metrics.py kinematics
+(reaction_time, normalized_path_length, dimensionless_jerk, n_speed_peaks,
+...; the ideal target point of a region is its centre). Region goals also get:
+  reached_hidden            100 if the region was entered while the cursor was
+                            still hidden, else 0
+  region_at_reveal          region of the cursor when it reappears (the target
+                            if it was reached while hidden)
+  region_at_reveal_correct  100 if that is the target, else 0
+  first_region              first region (outside the centre) visited, i.e.
+                            stayed in for MIN_VISIT_S (the target counts at once)
+  first_region_correct      100 if it was the target, else 0
+  n_wrong_regions           distinct other regions visited before the target
+Averages (mean_* in the summary) over all region goals, per region and per
+block of BLOCK_SIZE (8) consecutive targets = one repetition of every region
+(12 blocks: learning curve).
+
+Results (a subject with previous sessions gets _1, _2, ... appended):
+  results_regions/<subject>_regions_trials.csv       one row per goal
+  results_regions/<subject>_regions_blocks.csv       one row per block of 8 targets
+  results_regions/<subject>_regions_trajectory.csv   every cursor sample (trial, t, x, y, cursor_visible)
+  results_regions/<subject>_regions_summary.json     means (regions, returns, per region, per block), config
 
 Usage:
     python3 reaching_regions.py --subject S001 [--calib <name>] [--cam 0] [--sequence file.csv]
-        --show-areas      draw the areas (to check them: never with a participant)
-        --preview out.png write the layout to an image and exit (no webcam)
 Keys: Q / ESC = abort (results so far are still saved).
 """
 
@@ -69,47 +67,56 @@ import datetime
 import json
 import math
 import os
+import re
 import sys
 import time
 
 import cv2
 import numpy as np
 
-import reaching_center_out as base
-import socket_client as bomi
-from reaching_center_out import CANVAS_W, CANVAS_H, CRS_RADIUS, CURSOR, WHITE, GREEN, BLUE
-from reaching_metrics import METRIC_KEYS, compute_trial_metrics, summarize
+import bomi
+from reaching_metrics import METRIC_KEYS, block_summaries, compute_trial_metrics, summarize
 
-# --- Geometry (canvas px) ---
+# --- Geometry (canvas px, markerlessBoMI reaching.py) ---
+CANVAS_W, CANVAS_H = 1200, 650
+CRS_RADIUS = 15
 REGION_X = (0, CANVAS_W / 3.0, 2 * CANVAS_W / 3.0, CANVAS_W)   # column boundaries (400 px wide)
 REGION_Y = (0, CANVAS_H / 3.0, 2 * CANVAS_H / 3.0, CANVAS_H)   # row boundaries (216.7 px high)
-AREA_SIDE = 140          # square side: the participant cannot see it, so keep it large
-AREA_EDGE_MARGIN = 50    # distance of the outer areas from the screen edge
 HOME_REGION = 5
-HOME_RADIUS = base.TGT_RADIUS   # visible disc at the centre (40 px, as the center-out home)
-START_RADIUS = 1.5 * HOME_RADIUS   # an area trial starts when the cursor leaves THIS circle (hysteresis)
-MIN_VISIT_S = 0.25                 # a region counts as visited if the cursor stays in it this long
-BLIND_KEYS = ("first_region", "first_region_correct", "n_wrong_regions", "time_to_region", "search_time")
-AREA_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k != "first_region")   # averaged in the summary
+HOME_RADIUS = 40
 REGION_NAMES = {1: "top-left", 2: "top", 3: "top-right", 4: "left", 5: "centre (home)",
                 6: "right", 7: "bottom-left", 8: "bottom", 9: "bottom-right"}
 
 # --- Sequence ---
 SEQUENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "cursor_regions.csv")
-N_REPETITIONS = 3        # default sequence: every outer region this many times
-SEQUENCE_SEED = base.TARGET_SEED
+N_REPETITIONS = 12       # default sequence: every outer region this many times (8 x 12 = 96 targets)
+SEQUENCE_SEED = 20
+BLOCK_SIZE = 8           # statistics per block of 8 consecutive targets (= one repetition of every region)
 
-# --- Timing / metrics (as reaching_center_out) ---
-HOME_DWELL_S = base.DWELL_S   # the cursor must stay on the home disc this long (0.5 s)
-AREA_DWELL_S = 0.0            # an area counts as reached the moment the cursor enters it
-MOTION_ONSET_SPEED = base.MOTION_ONSET_SPEED
-SPEED_PEAK_THRESHOLD = base.SPEED_PEAK_THRESHOLD
-RESAMPLE_HZ = base.RESAMPLE_HZ
+# --- Timing ---
+HOME_DWELL_S = 0.5       # the cursor must stay on the home disc this long
+HIDDEN_S = 1.0           # the cursor is not drawn for this long after the target region is shown
+MIN_VISIT_S = 0.25       # a region counts as visited if the cursor stays in it this long
+
+# --- Metrics (pixels of the canvas) ---
+MOTION_ONSET_SPEED = 40.0     # [px/s]
+SPEED_PEAK_THRESHOLD = 80.0   # [px/s]
+RESAMPLE_HZ = 50.0
+BLIND_KEYS = ("reached_hidden", "region_at_reveal", "region_at_reveal_correct",
+              "first_region", "first_region_correct", "n_wrong_regions")
+# Averaged in the summary (region numbers are not)
+REGION_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k not in ("region_at_reveal", "first_region"))
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_regions")
 WINDOW = "BoMI - Reaching (regions)"
+
+# Colours (BGR)
+WHITE = (255, 255, 255)
+GREEN = (0, 255, 0)
+BLUE = (255, 80, 0)
 GRID = (90, 90, 90)
-AREA_TARGET = (0, 0, 255)   # --show-areas only: the area currently to reach
+TARGET = (0, 255, 255)   # border of the target region
+CURSOR = (int(0.4 * 255), int(0.65 * 255), int(0.19 * 255))   # markerlessBoMI CURSOR, RGB -> BGR
 
 
 def region_of(x: float, y: float) -> int:
@@ -119,46 +126,21 @@ def region_of(x: float, y: float) -> int:
     return row * 3 + col + 1
 
 
-def build_areas(side: float = AREA_SIDE, margin: float = AREA_EDGE_MARGIN) -> dict:
-    """The square area of every region: {region: dict(region, cx, cy, side,
-    x0, y0, x1, y1)} in canvas px. Outer columns/rows are pushed `margin` px
-    from the screen edge, the middle ones are centred on their region."""
-    areas = {}
-    for region in range(1, 10):
-        row, col = divmod(region - 1, 3)
-        x0, y0, x1, y1 = REGION_X[col], REGION_Y[row], REGION_X[col + 1], REGION_Y[row + 1]
-        cx = margin + side / 2.0 if col == 0 else CANVAS_W - margin - side / 2.0 if col == 2 else (x0 + x1) / 2.0
-        cy = margin + side / 2.0 if row == 0 else CANVAS_H - margin - side / 2.0 if row == 2 else (y0 + y1) / 2.0
-        if not (x0 <= cx - side / 2 and cx + side / 2 <= x1 and y0 <= cy - side / 2 and cy + side / 2 <= y1):
-            raise ValueError(f"area {region} does not fit in its region (side {side}, margin {margin})")
-        areas[region] = {"region": region, "cx": cx, "cy": cy, "side": side,
-                         "x0": cx - side / 2.0, "y0": cy - side / 2.0, "x1": cx + side / 2.0, "y1": cy + side / 2.0}
-    return areas
-
-
-def inside_area(area: dict, x: float, y: float) -> bool:
-    return area["x0"] <= x <= area["x1"] and area["y0"] <= y <= area["y1"]
+def region_bounds(region: int) -> tuple:
+    """(x0, y0, x1, y1) of a region in canvas px."""
+    row, col = divmod(region - 1, 3)
+    return REGION_X[col], REGION_Y[row], REGION_X[col + 1], REGION_Y[row + 1]
 
 
 def inside_home(x: float, y: float) -> bool:
     return math.hypot(x - CANVAS_W / 2.0, y - CANVAS_H / 2.0) < HOME_RADIUS
 
 
-def inside_start(x: float, y: float) -> bool:
-    """Inside the (wider) start circle: an area trial has not started yet."""
-    return math.hypot(x - CANVAS_W / 2.0, y - CANVAS_H / 2.0) < START_RADIUS
-
-
-def blind_metrics(samples: list, target_region: int, t_start: float, t_enter: float) -> dict:
-    """Region-level metrics of an area goal from its samples (t, x, y).
-    first_region: the first region (outside the centre) the cursor stayed in
-    for MIN_VISIT_S (the target itself counts at once); first_region_correct:
-    100 if it was the target, else 0; n_wrong_regions: distinct regions
-    visited before the target; time_to_region: t_start -> first sample in the
-    target region; search_time: from there to entering the area."""
-    m = {k: None for k in BLIND_KEYS}
-    if not samples:
-        return m
+def visited_regions(samples: list, target_region: int) -> list:
+    """Regions (outside the centre) visited in order by samples (t, x, y): the
+    cursor must stay in a region MIN_VISIT_S for it to count, except the
+    target, which counts at once (crossing the corner of a side region on the
+    diagonal to a corner is not an error)."""
     regions = [region_of(x, y) for _, x, y in samples]
     times = [t for t, _, _ in samples]
     visited, i = [], 0
@@ -171,24 +153,32 @@ def blind_metrics(samples: list, target_region: int, t_start: float, t_enter: fl
             if not visited or visited[-1] != r:
                 visited.append(r)
         i = j + 1
+    return visited
+
+
+def blind_metrics(samples: list, target_region: int, t_shown: float, t_enter: float) -> dict:
+    """Region-level metrics of a region goal (see the module docstring)."""
+    m = {k: None for k in BLIND_KEYS}
+    if not samples:
+        return m
+    t_reveal = t_shown + HIDDEN_S
+    if t_enter is not None:
+        m["reached_hidden"] = 100.0 if t_enter < t_reveal else 0.0
+    if t_enter is not None and t_enter < t_reveal:
+        m["region_at_reveal"] = target_region
+    else:
+        at_reveal = [(t, x, y) for t, x, y in samples if t <= t_reveal]
+        if at_reveal and samples[-1][0] >= t_reveal:
+            m["region_at_reveal"] = region_of(at_reveal[-1][1], at_reveal[-1][2])
+    if m["region_at_reveal"] is not None:
+        m["region_at_reveal_correct"] = 100.0 if m["region_at_reveal"] == target_region else 0.0
+    visited = visited_regions(samples, target_region)
     if visited:
         m["first_region"] = visited[0]
         m["first_region_correct"] = 100.0 if visited[0] == target_region else 0.0
-    if target_region in regions:
-        t_region = times[regions.index(target_region)]
-        m["time_to_region"] = t_region - t_start
-        m["n_wrong_regions"] = len(set(visited[:visited.index(target_region)])) if target_region in visited else None
-        if t_enter is not None:
-            m["search_time"] = max(0.0, t_enter - t_region)
+    if target_region in visited:
+        m["n_wrong_regions"] = len(set(visited[:visited.index(target_region)]))
     return m
-
-
-def print_areas(areas: dict, margin: float) -> None:
-    print(f"Areas: side {areas[1]['side']:.0f} px, edge margin {margin:.0f} px (canvas {CANVAS_W}x{CANVAS_H}), "
-          f"home disc radius {HOME_RADIUS} px at the centre")
-    for a in areas.values():
-        print(f"  region {a['region']} ({REGION_NAMES[a['region']]:12s}): centre ({a['cx']:.0f}, {a['cy']:.0f})  "
-              f"x {a['x0']:.0f}-{a['x1']:.0f}  y {a['y0']:.0f}-{a['y1']:.0f}")
 
 
 def generate_sequence(repetitions: int = N_REPETITIONS, seed: int = SEQUENCE_SEED) -> list:
@@ -233,44 +223,56 @@ def load_sequence(path: str = SEQUENCE_FILE) -> list:
     return seq
 
 
-def build_trials(sequence: list, areas: dict) -> list:
-    """One goal per region of the sequence: kind ("home" for region 5, "area"
-    otherwise), region, target_number (the area goals counted 1..n; a home
-    takes the number of the area that follows it), x, y (goal centre) and,
-    for areas, x0/y0/x1/y1."""
-    trials, n_areas = [], 0
+def build_trials(sequence: list) -> list:
+    """One goal per region of the sequence: kind ("home" for region 5, "region"
+    otherwise), region, target_number (the region goals counted 1..n; a home
+    takes the number of the region goal that follows it), x, y (goal centre:
+    the disc, or the centre of the region)."""
+    trials, n_targets = [], 0
     for r in sequence:
         if r == HOME_REGION:
-            trials.append({"kind": "home", "region": r, "target_number": n_areas + 1,
+            trials.append({"kind": "home", "region": r, "target_number": n_targets + 1,
                            "x": CANVAS_W / 2.0, "y": CANVAS_H / 2.0})
         else:
-            n_areas += 1
-            a = areas[r]
-            trials.append({"kind": "area", "region": r, "target_number": n_areas, "x": a["cx"], "y": a["cy"],
-                           "x0": a["x0"], "y0": a["y0"], "x1": a["x1"], "y1": a["y1"]})
+            n_targets += 1
+            x0, y0, x1, y1 = region_bounds(r)
+            trials.append({"kind": "region", "region": r, "target_number": n_targets,
+                           "x": (x0 + x1) / 2.0, "y": (y0 + y1) / 2.0})
     return trials
 
 
+def session_name(subject: str, sequence: str, results_dir: str) -> str:
+    """<subject>_<sequence> for the first session, then <subject>_<sequence>_1,
+    _2, ... (any existing <results_dir>/<subject>_<sequence>* file counts as a
+    previous session)."""
+    prefix = f"{subject}_{sequence}"
+    existing = [f for f in os.listdir(results_dir) if f.startswith(prefix)]
+    if not existing:
+        return prefix
+    used = {int(m.group(1)) for f in existing
+            for m in [re.match(rf"{re.escape(prefix)}_(\d+)_(trials\.csv|summary\.json)$", f)] if m}
+    return f"{prefix}_{max(used, default=0) + 1}"
+
+
 class RegionsTest:
-    def __init__(self, subject: str, trials: list, areas: dict, results_dir: str = RESULTS_DIR,
+    def __init__(self, subject: str, trials: list, results_dir: str = RESULTS_DIR,
                  sequence: str = "regions") -> None:
         self.subject = subject
         self.trials = trials
-        self.areas = areas
         self.sequence = sequence
         self.results = []
-        self.trajectory = []   # every cursor sample: (trial, kind, region, t, x, y, phase)
+        self.trajectory = []   # every cursor sample: (trial, kind, region, t, x, y, cursor_visible)
 
         os.makedirs(results_dir, exist_ok=True)
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.base = os.path.join(results_dir, base.session_name(subject, sequence, results_dir))
+        self.base = os.path.join(results_dir, session_name(subject, sequence, results_dir))
 
         # Session/trial state (times are time.time())
         self.t_start = None
         self.t_session0 = None
         self.trial_i = -1
         self.trial = None
-        self.t_shown = None   # trial start: disc shown (home) / cursor left the disc (area); None = area waiting
+        self.t_shown = None   # goal shown: disc (home) / coloured region border (region)
         self.t_enter = None
         self.samples = []
         self.end_reason = None
@@ -286,116 +288,105 @@ class RegionsTest:
             self.end_reason = "completed"
             return
         self.trial = self.trials[self.trial_i]
-        self.t_shown = t if self.trial["kind"] == "home" else None
+        self.t_shown = t
         self.t_enter = None
         self.samples = []
-        n = f"{self.trial_i + 1}/{len(self.trials)}"
-        if self.trial["kind"] == "home":
-            print(f"  goal {n}: HOME (disc shown)")
-        else:
-            print(f"  goal {n}: region {self.trial['region']} ({REGION_NAMES[self.trial['region']]})"
-                  f"  -> give the instruction; the trial starts when the cursor leaves the start circle")
 
-    def waiting(self) -> bool:
-        """An area goal is current but the cursor has not left the home disc yet."""
-        return self.trial is not None and not self.end_reason and self.t_shown is None
+    def active(self) -> bool:
+        return self.trial is not None and not self.end_reason
 
-    def home_visible(self) -> bool:
-        """The centre disc is shown while it is the goal and while an area goal waits for the cursor to leave it."""
-        return self.trial is not None and not self.end_reason and (self.trial["kind"] == "home" or self.waiting())
+    def cursor_visible(self, t: float) -> bool:
+        """The cursor is hidden for the first HIDDEN_S of a region goal."""
+        return not (self.active() and self.trial["kind"] == "region" and t - self.t_shown < HIDDEN_S)
 
     def update(self, t: float, x: float, y: float) -> None:
         """One frame with the current (filtered) cursor position in canvas px."""
-        if self.trial is None or self.end_reason:
+        if not self.active():
             return
-        if self.waiting():
-            if inside_start(x, y):
-                self.trajectory.append((self.trial_i + 1, self.trial["kind"], self.trial["region"], t, x, y, "wait"))
-                return
-            self.t_shown = t   # the cursor left the start circle: the area trial starts (and the disc disappears)
-        self.trajectory.append((self.trial_i + 1, self.trial["kind"], self.trial["region"], t, x, y, "go"))
+        self.trajectory.append((self.trial_i + 1, self.trial["kind"], self.trial["region"], t, x, y,
+                                int(self.cursor_visible(t))))
         self.samples.append((t, x, y))
 
-        inside = inside_home(x, y) if self.trial["kind"] == "home" else inside_area(self.trial, x, y)
-        dwell = HOME_DWELL_S if self.trial["kind"] == "home" else AREA_DWELL_S
-        if inside:
-            if self.t_enter is None:
-                self.t_enter = t
-            if t - self.t_enter >= dwell:
-                self._end_trial(t)
-                self._next_trial(t)
-        else:
-            self.t_enter = None
+        if self.trial["kind"] == "home":
+            if inside_home(x, y):
+                if self.t_enter is None:
+                    self.t_enter = t
+                    if self.t_session0 is None:
+                        self.t_session0 = t   # first entry into the home: the session timer starts now
+                        print("  home entered: session timer started")
+                if t - self.t_enter >= HOME_DWELL_S:
+                    self._end_trial(t)
+            else:
+                self.t_enter = None
+        elif region_of(x, y) == self.trial["region"]:
+            self.t_enter = t
+            self._end_trial(t)
 
     def t0(self) -> float:
         """Time origin for the logs: session start if it has begun, else the launch."""
         return self.t_session0 if self.t_session0 is not None else self.t_start
 
     def _end_trial(self, t: float) -> None:
-        if self.t_session0 is None:
-            self.t_session0 = t   # first reach of the home: the session (and its timer) starts now
-            print("  home reached: session timer started")
         self._record_trial(t, success=True, reason="reached")
         r = self.results[-1]
-        what = "area entered" if self.trial["kind"] == "area" else "back at the centre"
-        npl = f", norm. path {r['normalized_path_length']:.2f}" if r["normalized_path_length"] is not None else ""
-        print(f"    {what} in {r['reach_time']:.2f}s{npl}")
+        if self.trial["kind"] == "region":
+            hidden = "  (cursor hidden)" if r["reached_hidden"] else ""
+            print(f"  target {r['target_number']}: region {r['region']} ({REGION_NAMES[r['region']]}) "
+                  f"reached in {r['reach_time']:.2f}s{hidden}")
+        self._next_trial(t)
 
     def _record_trial(self, t: float, success: bool, reason: str) -> None:
         tr = self.trial
-        started = self.t_shown is not None   # an area goal aborted while waiting has nothing to measure
-        metrics = compute_trial_metrics(self.samples if started else [], (tr["x"], tr["y"]),
-                                        self.t_shown if started else t, self.t_enter if success else None,
-                                        MOTION_ONSET_SPEED, SPEED_PEAK_THRESHOLD, RESAMPLE_HZ)
         t_enter = self.t_enter if success else None
+        metrics = compute_trial_metrics(self.samples, (tr["x"], tr["y"]), self.t_shown, t_enter,
+                                        MOTION_ONSET_SPEED, SPEED_PEAK_THRESHOLD, RESAMPLE_HZ)
         blind = blind_metrics(self.samples, tr["region"], self.t_shown, t_enter) \
-            if tr["kind"] == "area" and started else {k: None for k in BLIND_KEYS}
+            if tr["kind"] == "region" else {k: None for k in BLIND_KEYS}
         rel = lambda ts: (ts - self.t0()) if ts is not None else None
         self.results.append({
             "trial": self.trial_i + 1, "kind": tr["kind"], "region": tr["region"],
             "target_number": tr["target_number"],
             "goal_x": tr["x"], "goal_y": tr["y"],
-            "area_x0": tr.get("x0"), "area_y0": tr.get("y0"), "area_x1": tr.get("x1"), "area_y1": tr.get("y1"),
             "success": success, "end_reason": reason,
-            # Session times (s from the session start): trial start (area: the
-            # cursor left the disc; home: the disc appeared), goal entered, trial end
-            "t_start": rel(self.t_shown),
+            # Session times (s from the session start): goal shown, entered, trial end
+            "t_shown": rel(self.t_shown),
             "t_enter": rel(t_enter),
             "t_end": rel(t),
-            "trial_duration": (t - self.t_shown) if started else None,
-            **metrics,   # reach_time = t_enter - t_start, path metrics from t_start
-            **blind,     # area goals only: first_region, first_region_correct, n_wrong_regions, ...
+            "trial_duration": t - self.t_shown,
+            **metrics,   # reach_time = t_enter - t_shown
+            **blind,     # region goals only
         })
 
     def finish(self, t: float, reason: str = None) -> dict:
         """Close the current (unfinished) goal as missed (only on an abort) and write the results."""
         reason = reason or self.end_reason or "aborted"
-        if self.trial is not None and self.trial_i < len(self.trials) and reason != "completed":
+        if self.active() and reason != "completed":
             self._record_trial(t, success=False, reason=reason)
-        areas = [r for r in self.results if r["kind"] == "area"]
+        targets = [r for r in self.results if r["kind"] == "region"]
         homes = [r for r in self.results if r["kind"] == "home"]
+        blocks = block_summaries(targets, BLOCK_SIZE, keys=REGION_KEYS)
         summary = {
             "subject": self.subject, "sequence": self.sequence, "end_reason": reason,
             "n_trials_total": len(self.trials),
-            "n_areas_total": sum(1 for tr in self.trials if tr["kind"] == "area"),
+            "n_targets_total": sum(1 for tr in self.trials if tr["kind"] == "region"),
             "session_duration": (t - self.t_session0) if self.t_session0 is not None else 0.0,
             "timestamp": self.timestamp,
-            # centre -> invisible area (what the test measures); mean_first_region_correct = accuracy %
-            "areas": summarize(areas, keys=AREA_KEYS),
-            "homes": summarize(homes),      # area -> back to the centre disc
+            # centre -> target region (what the test measures)
+            "regions": summarize(targets, keys=REGION_KEYS),
+            "homes": summarize(homes),      # region -> back to the centre disc
             # Same statistics per region, over its repetitions
-            "per_region": {str(reg): summarize([r for r in areas if r["region"] == reg], keys=AREA_KEYS)
-                           for reg in sorted({r["region"] for r in areas})},
+            "per_region": {str(reg): summarize([r for r in targets if r["region"] == reg], keys=REGION_KEYS)
+                           for reg in sorted({r["region"] for r in targets})},
+            # ...and per block of BLOCK_SIZE consecutive targets (learning curve)
+            "block_size": BLOCK_SIZE,
+            "n_blocks": len(blocks),
+            "blocks": blocks,
             "missed": [{"trial": r["trial"], "kind": r["kind"], "region": r["region"], "reason": r["end_reason"]}
                        for r in self.results if not r["success"]],
             "config": {
-                "canvas": [CANVAS_W, CANVAS_H], "crs_radius": CRS_RADIUS,
-                "area_side": self.areas[1]["side"], "home_radius": HOME_RADIUS,
-                "areas": {str(k): {"cx": a["cx"], "cy": a["cy"], "x0": a["x0"], "y0": a["y0"], "x1": a["x1"], "y1": a["y1"]}
-                          for k, a in self.areas.items()},
+                "canvas": [CANVAS_W, CANVAS_H], "crs_radius": CRS_RADIUS, "home_radius": HOME_RADIUS,
                 "region_sequence": [tr["region"] for tr in self.trials],
-                "home_dwell_s": HOME_DWELL_S, "area_dwell_s": AREA_DWELL_S,
-                "start_radius": START_RADIUS, "min_visit_s": MIN_VISIT_S,
+                "home_dwell_s": HOME_DWELL_S, "hidden_s": HIDDEN_S, "min_visit_s": MIN_VISIT_S,
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }
@@ -404,34 +395,40 @@ class RegionsTest:
                 w = csv.DictWriter(f, fieldnames=list(self.results[0].keys()))
                 w.writeheader()
                 w.writerows(self.results)
+        if blocks:
+            with open(self.base + "_blocks.csv", "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for b in blocks for k in b)))
+                w.writeheader()
+                w.writerows(blocks)
         if self.trajectory:
             with open(self.base + "_trajectory.csv", "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["trial", "kind", "region", "t", "x", "y", "phase"])
-                w.writerows((i, k, reg, f"{ts - self.t0():.4f}", f"{x:.2f}", f"{y:.2f}", ph)
-                            for i, k, reg, ts, x, y, ph in self.trajectory)
+                w.writerow(["trial", "kind", "region", "t", "x", "y", "cursor_visible"])
+                w.writerows((i, k, reg, f"{ts - self.t0():.4f}", f"{x:.2f}", f"{y:.2f}", vis)
+                            for i, k, reg, ts, x, y, vis in self.trajectory)
         with open(self.base + "_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
 
 
 # --- Drawing ---
-class Screen(base.Screen):
-    """reaching_center_out's fullscreen window (canvas scaled and centred);
-    `size` renders offscreen instead (--preview)."""
+class Screen:
+    """Fullscreen window; the canvas is scaled uniformly and centred."""
 
-    def __init__(self, title: str = WINDOW, size: tuple = None) -> None:
-        if size is None:
-            super().__init__(title)
-            return
+    def __init__(self, title: str = WINDOW) -> None:
         self.window = title
-        self.w, self.h = size
+        self.w, self.h = bomi.open_fullscreen_window(self.window)
         self.scale = min(self.w / CANVAS_W, self.h / CANVAS_H)
         self.ox = (self.w - CANVAS_W * self.scale) / 2.0
         self.oy = (self.h - CANVAS_H * self.scale) / 2.0
 
-    def render(self, crs_x: float, crs_y: float, hand_detected: bool, test: RegionsTest = None,
-               areas: dict = None, info: str = "") -> np.ndarray:
+    def to_screen(self, x: float, y: float) -> tuple:
+        return int(self.ox + x * self.scale), int(self.oy + y * self.scale)
+
+    def px(self, r: float) -> int:
+        return max(1, int(round(r * self.scale)))
+
+    def draw(self, test: RegionsTest, crs_x: float, crs_y: float, t: float, hand_detected: bool) -> None:
         img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
         x0, y0 = self.to_screen(0, 0)
         x1, y1 = self.to_screen(CANVAS_W, CANVAS_H)
@@ -440,24 +437,25 @@ class Screen(base.Screen):
             cv2.line(img, self.to_screen(x, 0), self.to_screen(x, CANVAS_H), GRID, self.px(2))
         for y in REGION_Y[1:3]:
             cv2.line(img, self.to_screen(0, y), self.to_screen(CANVAS_W, y), GRID, self.px(2))
-        tr = test.trial if test is not None and not test.end_reason else None
-        for a in (areas or {}).values():   # --show-areas only
-            colour = AREA_TARGET if tr is not None and tr["kind"] == "area" and tr["region"] == a["region"] \
-                else BLUE if inside_area(a, crs_x, crs_y) else GREEN
-            cv2.rectangle(img, self.to_screen(a["x0"], a["y0"]), self.to_screen(a["x1"], a["y1"]), colour, self.px(2))
-            cv2.putText(img, str(a["region"]), self.to_screen(a["x0"] + 8, a["y0"] + 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9 * self.scale, colour, 2)
-        if test is not None and test.home_visible():
-            colour = BLUE if tr["kind"] == "home" and test.t_enter is not None else GREEN
-            cv2.circle(img, self.to_screen(CANVAS_W / 2.0, CANVAS_H / 2.0), self.px(HOME_RADIUS), colour, self.px(2))
-        cv2.circle(img, self.to_screen(crs_x, crs_y), self.px(CRS_RADIUS), CURSOR if hand_detected else (90, 90, 90), -1)
-        if info:
-            cv2.putText(img, info, (int(20 * self.scale), self.h - int(20 * self.scale)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9 * self.scale, WHITE, 2)
-        return img
-
-    def draw(self, *args, **kwargs) -> None:
-        cv2.imshow(self.window, self.render(*args, **kwargs))
+        if test.active():
+            if test.trial["kind"] == "home":
+                colour = BLUE if test.t_enter is not None else GREEN
+                cv2.circle(img, self.to_screen(CANVAS_W / 2.0, CANVAS_H / 2.0), self.px(HOME_RADIUS), colour, self.px(2))
+            else:
+                # Border of the target region, drawn inside it so it is fully visible at the screen edges
+                rx0, ry0, rx1, ry1 = region_bounds(test.trial["region"])
+                inset = 4
+                cv2.rectangle(img, self.to_screen(rx0 + inset, ry0 + inset), self.to_screen(rx1 - inset, ry1 - inset),
+                              TARGET, self.px(6))
+        if test.cursor_visible(t):
+            cv2.circle(img, self.to_screen(crs_x, crs_y), self.px(CRS_RADIUS), CURSOR if hand_detected else GRID, -1)
+        elapsed = (t - test.t_session0) if test.t_session0 is not None else 0.0
+        n_targets = sum(1 for tr in test.trials if tr["kind"] == "region")
+        number = min(test.trial["target_number"], n_targets) if test.trial is not None else 0
+        info = f"target {number}/{n_targets}   {int(elapsed // 60)}:{int(elapsed % 60):02d}"
+        cv2.putText(img, info, (int(20 * self.scale), self.h - int(20 * self.scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9 * self.scale, WHITE, 2)
+        cv2.imshow(self.window, img)
 
 
 # --- Entry point ---
@@ -473,27 +471,11 @@ def main() -> None:
     parser.add_argument("--model", default=bomi.DEFAULT_MODEL_PATH, help="MediaPipe hand_landmarker.task model")
     parser.add_argument("--sequence", default=SEQUENCE_FILE,
                         help="Region sequence file, one region (1-9, 5 = home) per row (default: config/cursor_regions.csv)")
-    parser.add_argument("--show-areas", action="store_true",
-                        help="Draw the areas (red = the one to reach): to check them, not for a participant")
-    parser.add_argument("--side", type=float, default=AREA_SIDE, help=f"Area side in canvas px (default: {AREA_SIDE})")
-    parser.add_argument("--margin", type=float, default=AREA_EDGE_MARGIN,
-                        help=f"Distance of the outer areas from the screen edge (default: {AREA_EDGE_MARGIN})")
-    parser.add_argument("--preview", default=None, metavar="PNG",
-                        help="Write the layout (areas shown, cursor at the centre) to this image and exit: no webcam")
     args = parser.parse_args()
 
-    areas = build_areas(args.side, args.margin)
-    print_areas(areas, args.margin)
     sequence = load_sequence(args.sequence)
-    print(f"Sequence ({len(sequence)} goals, {sum(1 for r in sequence if r != HOME_REGION)} areas): "
+    print(f"Sequence ({len(sequence)} goals, {sum(1 for r in sequence if r != HOME_REGION)} targets): "
           + " ".join(map(str, sequence)))
-
-    if args.preview:
-        screen = Screen(size=(1920, 1080))
-        cv2.imwrite(args.preview, screen.render(CANVAS_W / 2, CANVAS_H / 2, True, None, areas,
-                                                f"side {args.side:.0f}  margin {args.margin:.0f}"))
-        print(f"Layout written to {args.preview}")
-        return
 
     subject = bomi._strip_npz(args.subject)
     calib_path = bomi._resolve_calib_path(args.calib) if args.calib else bomi._resolve_subject_map_path(args.subject)
@@ -516,42 +498,25 @@ def main() -> None:
     if not cap.isOpened():
         print(f"[ERROR] Cannot open camera {args.cam}")
         sys.exit(1)
-    landmarker = bomi.hand_landmarker.HandLandmarker.create_from_options(
-        bomi.hand_landmarker.HandLandmarkerOptions(
-            base_options=bomi.base_options.BaseOptions(model_asset_path=args.model),
-            running_mode=bomi.vision_task_running_mode.VisionTaskRunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=0.7,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
-    )
+    landmarker = bomi.create_hand_landmarker(args.model)
 
-    test = RegionsTest(subject, build_trials(sequence, areas), areas)
+    test = RegionsTest(subject, build_trials(sequence))
     screen = Screen()
     cursor_filter = bomi.CursorFilter()
-    # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas, same as reaching_center_out
+    # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas
     sx, sy = CANVAS_W / bomi.BASE_WIDTH, CANVAS_H / bomi.BASE_HEIGHT
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
 
-    print(f"\n=== 9-REGION REACHING === {len(test.trials)} goals. Q = abort")
+    print(f"\n=== 9-REGION BLIND REACHING === {len(test.trials)} goals. Q = abort")
     test.start(time.time())
     try:
         while not test.end_reason:
-            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            _, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)
             test.update(t, cx, cy)
-            elapsed = (t - test.t_session0) if test.t_session0 is not None else 0.0
-            info = f"{min(test.trial_i + 1, len(test.trials))}/{len(test.trials)}   {int(elapsed // 60)}:{int(elapsed % 60):02d}"
-            if test.trial is not None and not test.end_reason:   # the goal to reach
-                goal = "CENTRE" if test.trial["kind"] == "home" else f"region {test.trial['region']} ({REGION_NAMES[test.trial['region']]})"
-                info += f"   ->  {goal}"
-            if args.show_areas:
-                info += f"   region {region_of(cx, cy)}  cursor ({cx:.0f}, {cy:.0f})"
-            screen.draw(cx, cy, hand_detected, test, areas if args.show_areas else None, info)
-
+            screen.draw(test, cx, cy, t, hand_detected)
             key = cv2.waitKey(1) & 0xFF
             if bomi._quit_requested(key, screen.window):
                 test.end_reason = "aborted"
@@ -561,15 +526,15 @@ def main() -> None:
         cv2.destroyAllWindows()
         landmarker.close()
 
-    a, h = summary["areas"], summary["homes"]
+    a, h = summary["regions"], summary["homes"]
     fmt = lambda v, u="s": f"{v:.2f}{u}" if v is not None else "-"
-    print(f"\nSession over ({summary['end_reason']}): {a['n_success']}/{summary['n_areas_total']} areas reached, "
+    print(f"\nSession over ({summary['end_reason']}): {a['n_success']}/{summary['n_targets_total']} targets reached, "
           f"{summary['session_duration']:.0f}s")
-    print(f"  centre -> area: mean time {fmt(a['mean_reach_time'])}, norm. path {fmt(a['mean_normalized_path_length'], '')}, "
-          f"first region correct {fmt(a.get('mean_first_region_correct'), '%')}, "
-          f"wrong regions {fmt(a.get('mean_n_wrong_regions'), '')}, search {fmt(a.get('mean_search_time'))}")
-    print(f"  area -> centre: mean time {fmt(h['mean_reach_time'])}, norm. path {fmt(h['mean_normalized_path_length'], '')}")
-    print(f"  results: {test.base}_trials.csv / _trajectory.csv / _summary.json")
+    print(f"  centre -> region: mean time {fmt(a['mean_reach_time'])}, norm. path {fmt(a['mean_normalized_path_length'], '')}, "
+          f"reached hidden {fmt(a['mean_reached_hidden'], '%')}, correct at reveal {fmt(a['mean_region_at_reveal_correct'], '%')}, "
+          f"first region correct {fmt(a['mean_first_region_correct'], '%')}, wrong regions {fmt(a['mean_n_wrong_regions'], '')}")
+    print(f"  region -> centre: mean time {fmt(h['mean_reach_time'])}, norm. path {fmt(h['mean_normalized_path_length'], '')}")
+    print(f"  results: {test.base}_trials.csv / _blocks.csv / _trajectory.csv / _summary.json")
 
 
 if __name__ == "__main__":

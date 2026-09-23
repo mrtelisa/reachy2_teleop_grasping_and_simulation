@@ -1,17 +1,10 @@
 __pycache__/
 *.pyc
 *.pyo
-build/
-install/
-log/
 # Saved BoMI calibrations: raw samples (calibrations/*_calib.npy) and maps (calibrations/*.npz)
 *.npz
 *.npy
 *.png
-# Cursor reaching test outputs (reaching_center_out.py / reaching_random.py)
-results_center_out/
-results_random/
-results_robot/
-results_training/
+# Blind reaching test outputs (reaching_regions.py)
+results_regions/
 reachy_bomi/webcam_mediapipe.py
-results_regions

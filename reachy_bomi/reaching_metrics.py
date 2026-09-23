@@ -1,7 +1,6 @@
 """
-Per-trial kinematic metrics for the reaching tests (robot base or on-screen
-cursor). Plain numpy/scipy, no ROS, so both reaching_task.py (ROS 2 node) and
-reaching_cursor.py (fullscreen cursor test) can share it.
+Per-trial kinematic metrics of the on-screen cursor reaching test
+(reaching_regions.py). Plain numpy/scipy.
 
 Metrics (None where not computable):
   reaction_time      target shown -> movement onset (speed > onset_speed)
@@ -39,7 +38,7 @@ def compute_trial_metrics(samples, goal, t_shown, t_reach, onset_speed, peak_thr
     trial end. Without velocities they are derived from the positions.
     goal: (x, y). t_reach: time the target was entered for the last time
     (None if missed -> the whole trial is used). Units are whatever the
-    positions are in (m for the robot, px for the cursor).
+    positions are in (canvas px for the cursor).
     """
     m = {k: None for k in METRIC_KEYS}
     if len(samples) < 3:
@@ -153,10 +152,9 @@ def block_summaries(results: list, block_size: int, keys=SUMMARY_KEYS,
     complete=False).
 
     results: the trial dicts of the test; each one is assigned to a block by
-    its `group_key` (target_number, 1-based), so in the center-out test the
-    home return of a target counts in the same block as the target itself.
-    The optional keys t_shown/t_end (block duration), points (score) and
-    over_time are used when the trials have them.
+    its `group_key` (target_number, 1-based). The optional keys t_shown/t_end
+    (block duration), points (score) and over_time are used when the trials
+    have them.
     """
     block_size = int(block_size)
     if not results or block_size <= 0:

@@ -21,7 +21,7 @@ from mediapipe.tasks.python.core import base_options
 from mediapipe.tasks.python.vision import hand_landmarker
 from mediapipe.tasks.python.vision.core import vision_task_running_mode
 
-import socket_client as bomi
+import bomi
 
 
 def _use_map(cap, landmarker, bomi_map: bomi.BoMIMap) -> None:

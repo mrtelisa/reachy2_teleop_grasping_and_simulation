@@ -4,8 +4,8 @@ Step 2, once per participant (no robot needed): markerlessBoMI's
 "Customization". Loads the shared autoencoder map (calibrations/shared.npz,
 from calibrate_bomi.py), lets you rotate / flip / scale / offset it live on the
 participant's hand, shown fullscreen, and saves it as
-calibrations/<SUBJECT>_<YYYYMMDD_HHMMSS>.npz -- socket_client.py and the
-reaching tests, given --subject SUBJECT, load the latest of those. The shared
+calibrations/<SUBJECT>_<YYYYMMDD_HHMMSS>.npz -- load_bomi.py and the
+reaching test, given --subject SUBJECT, load the latest of those. The shared
 map is untouched.
 
 Keys:
@@ -32,7 +32,7 @@ from mediapipe.tasks.python.core import base_options
 from mediapipe.tasks.python.vision import hand_landmarker
 from mediapipe.tasks.python.vision.core import vision_task_running_mode
 
-import socket_client as bomi
+import bomi
 
 ROT_STEP_DEG = 5.0
 SCALE_STEP = 1.1     # multiplicative

@@ -25,7 +25,7 @@ from mediapipe.tasks.python.core import base_options
 from mediapipe.tasks.python.vision import hand_landmarker
 from mediapipe.tasks.python.vision.core import vision_task_running_mode
 
-import socket_client as bomi
+import bomi
 
 MIN_SAMPLES = 100  # fewer tracked frames than this in a recording = something is wrong with the webcam
 

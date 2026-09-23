@@ -1,14 +1,9 @@
 # Python dependencies for the operator PC (venv), for BOTH branches:
 #   - main:                     reachy_control.py + calibrate/customize/load_bomi.py (real Reachy 2 via reachy2_sdk)
-#   - test-simulation-reaching: socket_client.py, reaching_center_out.py / reaching_random.py + the calibration tools
-# The ROS 2 side (socket_server, cmd_vel_publisher, reaching_task, launch files) is NOT covered here:
-# it runs inside the Reachy Docker container with its own ROS Humble stack (rclpy, pyyaml, ...).
+#   - test-simulation-reaching: reaching_regions.py (blind reaching test) + the calibration tools
 #
 #   python3 -m venv ~/.venvs/reachy_bomi && source ~/.venvs/reachy_bomi/bin/activate
 #   pip install --upgrade pip && pip install -r requirements.txt
-#
-# Optional, system-level (not pip): `sudo apt install wmctrl` keeps the cursor map above the
-# noVNC browser window in socket_client.py (simulation branch only).
 
 # --- common to both branches: hand tracking -> autoencoder cursor -> 9-region velocity ---
 mediapipe>=0.10.14        # Tasks API (HandLandmarker); >=0.10.14 for Python 3.12
