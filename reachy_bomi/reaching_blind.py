@@ -15,8 +15,8 @@ Targets: config/blind_targets.csv, one trial per row (trial, target, x, y),
 any other file with --sequence. It is generated once if missing: 3 positions
 drawn at random (seeded; one per third of the screen width, at least
 MIN_SEPARATION px apart, MIN_CENTRE_DIST px from the centre, MIN_Y_SPREAD px
-between the highest and the lowest) and N_REPETITIONS (4) visits of each
--> 12 trials, in seeded random order (all 3 once before any repeat, never the
+between the highest and the lowest) and N_REPETITIONS (5) visits of each
+-> 15 trials, in seeded random order (all 3 once before any repeat, never the
 same twice in a row). The file is frozen, so the pre and post sessions (and
 every participant) see exactly the same targets.
 
@@ -24,7 +24,7 @@ Session flow: the 3 blue circles are shown together with the cursor (the
 only time it is visible), so the participant can see where the hand is.
 After START_CURSOR_S (2 s) ENTER (experimenter) is accepted: it starts the
 session, the cursor disappears and the first target turns yellow at once;
-after 12 x 4 s the session ends (or on Q/ESC). A small dot in the top-right
+after 15 x 4 s the session ends (or on Q/ESC). A small dot in the top-right
 corner is green while the hand is tracked, grey when it is lost (no position
 information).
 
@@ -90,7 +90,7 @@ EDGE_MARGIN = TARGET_RADIUS + 30
 # --- Sequence ---
 SEQUENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "blind_targets.csv")
 N_TARGETS = 3
-N_REPETITIONS = 4        # default sequence: every target this many times (3 x 4 = 12 trials)
+N_REPETITIONS = 5        # default sequence: every target this many times (3 x 5 = 15 trials)
 SEQUENCE_SEED = 20
 BLOCK_SIZE = N_TARGETS   # statistics per block of 3 consecutive trials (= every target once)
 
