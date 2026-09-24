@@ -1,0 +1,12 @@
+scenarios:
+  # Free driving in a room with a few obstacles: the participant just moves
+  # the robot around with the hand interface.
+  familiarization:
+    world: worlds/familiarization.world
+    bag_prefix: Familiarization
+  # Center-out reaching task with the mobile base (reaching_task.py, see
+  # config/reaching.yaml): empty room, target discs on the floor.
+  reaching:
+    world: worlds/reaching.world
+    bag_prefix: Reaching
+    task: reaching
