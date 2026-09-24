@@ -84,6 +84,8 @@ from tensorflow.keras import Model
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.optimizers import Adam
 
+import display  # every OpenCV window on the laptop screen (see display.py)
+
 HAND_CONNECTIONS = hand_landmarker.HandLandmarksConnections.HAND_CONNECTIONS
 
 # --- Virtual screen dimensions ---
@@ -205,8 +207,9 @@ def load_calib_samples(path: str) -> np.ndarray:
 CAM_WINDOW_NAME = "BoMI - Control"
 MAP_WINDOW_NAME = "BoMI - Cursor Map"
 
-# Cursor map window: size in pixels and screen position (top-left corner) it
-# is pinned to, so it sits in a corner above the browser showing the simulation.
+# Cursor map window: size in pixels and position (top-left corner, relative to
+# the display.py screen) it is pinned to, so it sits in a corner above the
+# browser showing the simulation.
 MAP_WINDOW_SIZE = (510, 300)
 MAP_WINDOW_POS = (0, 0)
 
@@ -420,7 +423,7 @@ def _pin_map_window(window_name: str) -> None:
     window is also re-activated via wmctrl (same as alt-tabbing to it), throttled
     to once per second. No-ops (after one warning) if wmctrl isn't installed."""
     global _last_raise_time, _wmctrl_missing_warned
-    cv2.moveWindow(window_name, *MAP_WINDOW_POS)  # a just-closed window can make the WM reclaim the position otherwise
+    display.move(window_name, *MAP_WINDOW_POS)  # a just-closed window can make the WM reclaim the position otherwise
     cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
 
     now = time.time()

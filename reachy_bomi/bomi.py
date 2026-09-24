@@ -28,6 +28,8 @@ from tensorflow.keras import Model
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.optimizers import Adam
 
+import display  # every OpenCV window on the laptop screen (see display.py)
+
 HAND_CONNECTIONS = hand_landmarker.HandLandmarksConnections.HAND_CONNECTIONS
 
 # --- Virtual screen dimensions ---
@@ -251,6 +253,38 @@ def open_fullscreen_window(window_name: str) -> tuple:
     if w <= 0 or h <= 0:
         w, h = MAP_WINDOW_SIZE
     return w, h
+
+
+CAM_WINDOW_NAME = "BoMI - Camera"
+CAM_WINDOW_WIDTH = 640   # initial width in pixels (height from the camera aspect ratio), then resizable
+
+
+def open_camera_window(cap) -> str:
+    """Resizable window for show_camera() on the experimenter's monitor
+    (display.use_monitor). Open it BEFORE the participant's window, so that
+    one keeps the keyboard focus. Returns the window name."""
+    display.use_monitor(CAM_WINDOW_NAME)
+    cv2.namedWindow(CAM_WINDOW_NAME, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    # Qt sizes the window on the first frame: show a black one of the camera
+    # size, then set the initial size and centre it again at that size
+    cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
+    cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
+    cv2.imshow(CAM_WINDOW_NAME, np.zeros((cam_h, cam_w, 3), dtype=np.uint8))
+    cv2.waitKey(100)
+    cv2.resizeWindow(CAM_WINDOW_NAME, CAM_WINDOW_WIDTH, round(CAM_WINDOW_WIDTH * cam_h / cam_w))
+    cv2.waitKey(100)
+    display.place(CAM_WINDOW_NAME)
+    return CAM_WINDOW_NAME
+
+
+def show_camera(frame, hand_detected: bool) -> None:
+    """The webcam frame of update_bomi_cursor() (hand landmarks already drawn)
+    in the open_camera_window() window, with the tracking status."""
+    if frame is None:
+        return
+    status, colour = ("hand detected", (0, 255, 0)) if hand_detected else ("no hand", (0, 0, 255))
+    cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, colour, 2)
+    cv2.imshow(CAM_WINDOW_NAME, frame)
 
 
 def draw_fullscreen_cursor_map(screen_w: int, screen_h: int, crs_x: float, crs_y: float,

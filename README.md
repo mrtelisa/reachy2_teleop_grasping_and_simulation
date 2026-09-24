@@ -26,6 +26,8 @@ All the scripts are run from `reachy_bomi/`:
 cd reachy_bomi
 ```
 
+Every window the scripts open (cursor map, tests, webcam, calibration) goes on the **laptop's built-in screen**, whichever terminal or monitor you launch them from ([`display.py`](reachy_bomi/display.py)). Fullscreen windows fill that screen. To use another screen, set `BOMI_SCREEN` to its `xrandr` output name, e.g. `BOMI_SCREEN=DP-1 python3 reaching_blind.py ...`. `customize_bomi.py`, `reaching_regions.py` and `reaching_blind.py` also open a resizable **camera window** (webcam + tracked hand) on the **external monitor**, for the experimenter only (`BOMI_MONITOR` to choose another output). The keys (`ENTER`, `Q`, ...) are read by the window, not by the terminal: a new window takes the keyboard focus, and if you click back on the terminal, click the window (or `Alt+Tab`) before pressing them.
+
 ---
 
 ## Calibration maps
@@ -147,6 +149,7 @@ Per-trial metrics (canvas px, distances from the target centre). The `reaching_m
 reachy2_teleop_grasping_and_simulation/
 ├── reachy_bomi/
 │   ├── bomi.py                 # shared hand -> cursor chain: MediaPipe, autoencoder map, filter, calibrations/ helpers
+│   ├── display.py              # puts the OpenCV windows on the laptop screen, the camera view on the monitor
 │   ├── calibrate_bomi.py       # once: 90 s continuous calibration + offline AE training -> calibrations/shared.npz
 │   ├── customize_bomi.py       # per participant: rotate/flip/scale/offset the shared map -> calibrations/<SUBJECT>_<date>_<time>.npz
 │   ├── load_bomi.py            # try a participant's / any saved map on the fullscreen cursor map

@@ -26,7 +26,8 @@ After START_CURSOR_S (2 s) ENTER (experimenter) is accepted: it starts the
 session, the cursor disappears and the first target turns yellow at once;
 after 15 x 4 s the session ends (or on Q/ESC). A small dot in the top-right
 corner is green while the hand is tracked, grey when it is lost (no position
-information).
+information). The webcam with the tracked hand is shown in a separate window
+on the experimenter's monitor (never to the participant).
 
 Metrics of every trial (window = the TRIAL_S the target is yellow; distances
 in canvas px from the target centre):
@@ -462,6 +463,7 @@ def main() -> None:
     landmarker = bomi.create_hand_landmarker(args.model)
 
     test = BlindTest(subject, args.phase, trials)
+    bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
     cursor_filter = bomi.CursorFilter()
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas
@@ -472,7 +474,8 @@ def main() -> None:
     t_launch = time.time()
     try:
         while not test.end_reason:
-            _, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            bomi.show_camera(frame, hand_detected)
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)

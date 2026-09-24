@@ -3,7 +3,8 @@
 Step 2, once per participant (no robot needed): markerlessBoMI's
 "Customization". Loads the shared autoencoder map (calibrations/shared.npz,
 from calibrate_bomi.py), lets you rotate / flip / scale / offset it live on the
-participant's hand, shown fullscreen, and saves it as
+participant's hand, shown fullscreen (the webcam with the tracked hand in a
+window on the experimenter's monitor), and saves it as
 calibrations/<SUBJECT>_<YYYYMMDD_HHMMSS>.npz -- load_bomi.py and the
 reaching test, given --subject SUBJECT, load the latest of those. The shared
 map is untouched.
@@ -72,15 +73,17 @@ def _customize_and_save(cap, landmarker, calib_path: str, subject: str) -> None:
     cursor_filter = bomi.CursorFilter()
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
     map_window = bomi.MAP_WINDOW_NAME
+    bomi.open_camera_window(cap)   # before the map, which keeps the keyboard focus
     screen_w, screen_h = bomi.open_fullscreen_window(map_window)
 
     print(f"\n=== CUSTOMIZE '{calib_path}' (nothing is sent anywhere) ===")
     print(HELP_TEXT)
 
     while True:
-        _, crs_x, crs_y, _ = bomi.update_bomi_cursor(
+        frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(
             cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
         )
+        bomi.show_camera(frame, hand_detected)
         region = bomi.check_region_cursor(crs_x, crs_y)
         cv2.imshow(map_window, bomi.draw_fullscreen_cursor_map(screen_w, screen_h, crs_x, crs_y, region, HELP_TEXT))
 

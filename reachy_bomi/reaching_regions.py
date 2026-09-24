@@ -35,6 +35,8 @@ Trial flow:
                  reach_time = target shown -> entering the circle.
 The session timer starts when the cursor enters the home disc for the first
 time. The session ends when every goal has been reached (or on Q/ESC).
+The webcam with the tracked hand is shown in a separate window on the
+experimenter's monitor.
 
 Metrics of every goal: the reaching_metrics.py kinematics
 (reaction_time, normalized_path_length, dimensionless_jerk, n_speed_peaks,
@@ -506,6 +508,7 @@ def main() -> None:
     landmarker = bomi.create_hand_landmarker(args.model)
 
     test = RegionsTest(subject, build_trials(sequence))
+    bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
     cursor_filter = bomi.CursorFilter()
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas
@@ -516,7 +519,8 @@ def main() -> None:
     test.start(time.time())
     try:
         while not test.end_reason:
-            _, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            bomi.show_camera(frame, hand_detected)
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)
