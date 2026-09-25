@@ -125,10 +125,10 @@ python3 reaching_regions.py --subject S001             # training
 python3 reaching_blind.py --subject S001 --phase post  # after the training
 ```
 
-During the test the cursor is **never shown**. Three blue target circles (radius 60 px) are always on screen, and the current one turns **yellow**. Every **5 s** (`TRIAL_S`) the current target changes, whatever the cursor did. The cursor is still tracked, so the results show whether the participant got there from the learned map alone.
+During the test the cursor is **never shown**. Only the **current target** is on screen: an empty yellow circle (radius 60 px), shown on its own like the targets of `reaching_regions.py`. Every **4 s** (`TRIAL_S`) it is replaced by the next one, whatever the cursor did. The cursor is still tracked, so the results show whether the participant got there from the learned map alone.
 
-- There are **15 trials**: each of the 3 targets 5 times, all 3 once before any repeat, never twice in a row. Positions (one per third of the screen width, at least 400 px apart and 250 px apart vertically between the highest and the lowest) and order are drawn at random (seeded) and frozen in [`config/blind_targets.csv`](config/blind_targets.csv) (`trial,target,x,y`), so the pre and post sessions, and every participant, get the same targets.
-- Before the start the cursor is visible, so the participant can see where the hand is. After 2 s (`START_CURSOR_S`), `ENTER` (experimenter) starts the session and the cursor disappears. `Q`/`Esc` aborts it, and the results so far are still saved.
+- There are **15 trials**: each of the 3 targets 5 times, all 3 once before any repeat, never twice in a row. Positions (one per third of the screen width, at least 400 px apart and 250 px apart vertically between the highest and the lowest, and **never overlapping a circle of `reaching_regions.py`** — its 8 targets and the home — with at least 20 px between the two, `REGION_CLEARANCE`) and order are drawn at random (seeded) and frozen in [`config/blind_targets.csv`](config/blind_targets.csv) (`trial,target,x,y`), so the pre and post sessions, and every participant, get the same targets.
+- Before the start only the cursor is visible (no target), so the participant can see where the hand is. After 2 s (`START_CURSOR_S`), `ENTER` (experimenter) starts the session and the cursor disappears. `Q`/`Esc` aborts it, and the results so far are still saved.
 - The dot in the top-right corner is green while the hand is tracked and grey when tracking is lost. It shows no position.
 - `--show-cursor` draws the cursor. Use it only to test the setup, never with a participant.
 

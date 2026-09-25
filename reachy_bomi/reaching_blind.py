@@ -5,25 +5,28 @@ Fullscreen 3-target blind reaching test (pre/post training).
 The hand drives a cursor through the BoMI chain of bomi.py (webcam ->
 MediaPipe -> autoencoder map -> Butterworth filter) on the same 1200 x 650
 canvas as reaching_regions.py, scaled to the whole screen. During the test
-the cursor is NEVER drawn: the participant only sees 3 blue target circles (radius
-TARGET_RADIUS) and one of them turns yellow = the current target. Every
-TRIAL_S (4 s) the current target changes, whatever the cursor did. The
-cursor is tracked the whole time, so the results say whether (and how well)
-the participant got there from the learned map alone.
+the cursor is NEVER drawn: the participant only sees the current target, an
+empty yellow circle (radius TARGET_RADIUS) shown on its own, as the targets of
+reaching_regions.py (the other targets are not on screen). Every TRIAL_S (4 s)
+it is replaced by the next target, whatever the cursor did. The cursor is
+tracked the whole time, so the results say whether (and how well) the
+participant got there from the learned map alone.
 
 Targets: config/blind_targets.csv, one trial per row (trial, target, x, y),
 any other file with --sequence. It is generated once if missing: 3 positions
 drawn at random (seeded; one per third of the screen width, at least
 MIN_SEPARATION px apart, MIN_CENTRE_DIST px from the centre, MIN_Y_SPREAD px
-between the highest and the lowest) and N_REPETITIONS (5) visits of each
+between the highest and the lowest, and not overlapping any circle of
+reaching_regions.py -- its 8 targets and the home -- with REGION_CLEARANCE px
+between the two circles) and N_REPETITIONS (5) visits of each
 -> 15 trials, in seeded random order (all 3 once before any repeat, never the
 same twice in a row). The file is frozen, so the pre and post sessions (and
 every participant) see exactly the same targets.
 
-Session flow: the 3 blue circles are shown together with the cursor (the
-only time it is visible), so the participant can see where the hand is.
+Session flow: before the start only the cursor is shown (the only time it is
+visible, no target), so the participant can see where the hand is.
 After START_CURSOR_S (2 s) ENTER (experimenter) is accepted: it starts the
-session, the cursor disappears and the first target turns yellow at once;
+session, the cursor disappears and the first target appears at once;
 after 15 x 4 s the session ends (or on Q/ESC). A small dot in the top-right
 corner is green while the hand is tracked, grey when it is lost (no position
 information). The webcam with the tracked hand is shown in a separate window
@@ -41,7 +44,8 @@ in canvas px from the target centre):
   min_error           closest approach
   relative_final_error  final_error / initial_error (0 = perfect, 1 = did not get closer)
   chosen_target, chosen_correct   target of the 3 closest to the cursor when the
-                      target changes, and 100 if it is the current one
+                      target changes (all 3 count, even if only the current
+                      one is on screen), and 100 if it is the current one
   hand_lost           % of the window without a tracked hand
 and the reaching_metrics.py kinematics (reaction_time, normalized_path_length,
 dimensionless_jerk, n_speed_peaks, ...) from the start of the window to the
@@ -79,6 +83,7 @@ import numpy as np
 
 import bomi
 from reaching_metrics import METRIC_KEYS, block_summaries, compute_trial_metrics, summarize
+import reaching_regions
 from reaching_regions import CANVAS_H, CANVAS_W, session_name
 
 # --- Geometry (canvas px, same canvas as reaching_regions.py) ---
@@ -87,6 +92,7 @@ MIN_SEPARATION = 400     # min distance between two target centres
 MIN_CENTRE_DIST = 150    # min distance of a target centre from the canvas centre (rest position)
 MIN_Y_SPREAD = 250       # min vertical distance between the highest and the lowest target
 EDGE_MARGIN = TARGET_RADIUS + 30
+REGION_CLEARANCE = 20    # min gap between a target and a reaching_regions.py circle (they never overlap)
 
 # --- Sequence ---
 SEQUENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "blind_targets.csv")
@@ -118,33 +124,55 @@ WINDOW = "BoMI - Blind reaching"
 # Colours (BGR)
 WHITE = (255, 255, 255)
 GREEN = (0, 255, 0)
-BLUE = (255, 80, 0)
 GRID = (90, 90, 90)
-TARGET = (0, 255, 255)   # current target
+TARGET = (0, 255, 255)   # current target (empty circle, as in reaching_regions.py)
+
+
+def region_circles() -> list:
+    """(x, y, radius) of the circles of reaching_regions.py: the home and the
+    target at the centre of every outer region."""
+    circles = []
+    for region in range(1, 10):
+        x0, y0, x1, y1 = reaching_regions.region_bounds(region)
+        radius = reaching_regions.HOME_RADIUS if region == reaching_regions.HOME_REGION \
+            else reaching_regions.TARGET_RADIUS
+        circles.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0, radius))
+    return circles
+
+
+def clear_of_regions(x: float, y: float) -> bool:
+    """True if a target centred in (x, y) is at least REGION_CLEARANCE px away
+    from every reaching_regions.py circle."""
+    return all(math.hypot(x - cx, y - cy) >= TARGET_RADIUS + r + REGION_CLEARANCE
+               for cx, cy, r in region_circles())
 
 
 def generate_positions(seed: int = SEQUENCE_SEED) -> list:
     """N_TARGETS random (x, y) target centres spread over the screen: one per
     vertical strip (N_TARGETS strips of equal width), inside the canvas
     (EDGE_MARGIN from the border), MIN_SEPARATION apart, MIN_CENTRE_DIST from
-    the centre, and at least MIN_Y_SPREAD between the highest and the lowest.
+    the centre, at least MIN_Y_SPREAD between the highest and the lowest,
+    and clear of the reaching_regions.py circles (clear_of_regions).
     The strips are assigned to the targets in random order."""
     rng = np.random.default_rng(seed)
     strip = CANVAS_W / N_TARGETS
-    for _ in range(10000):
+    for _ in range(500000):   # rare draws: the regions leave two narrow bands free
         pts = []
         for col in rng.permutation(N_TARGETS):
             x = float(rng.uniform(max(EDGE_MARGIN, col * strip), min(CANVAS_W - EDGE_MARGIN, (col + 1) * strip)))
             y = float(rng.uniform(EDGE_MARGIN, CANVAS_H - EDGE_MARGIN))
             if math.hypot(x - CANVAS_W / 2.0, y - CANVAS_H / 2.0) < MIN_CENTRE_DIST:
                 break   # restart the draw
+            if not clear_of_regions(x, y):
+                break
             if any(math.hypot(x - px, y - py) < MIN_SEPARATION for px, py in pts):
                 break
             pts.append((round(x), round(y)))
         ys = [y for _, y in pts]
         if len(pts) == N_TARGETS and max(ys) - min(ys) >= MIN_Y_SPREAD:
             return pts
-    raise RuntimeError("could not place the targets: lower MIN_SEPARATION / MIN_CENTRE_DIST / MIN_Y_SPREAD")
+    raise RuntimeError("could not place the targets: lower MIN_SEPARATION / MIN_CENTRE_DIST / MIN_Y_SPREAD "
+                       "/ REGION_CLEARANCE")
 
 
 def generate_sequence(repetitions: int = N_REPETITIONS, seed: int = SEQUENCE_SEED) -> list:
@@ -184,6 +212,9 @@ def load_trials(path: str = SEQUENCE_FILE) -> list:
             trials.append({"target": tgt, "x": x, "y": y})
     if not trials:
         raise ValueError(f"{path}: no trials found")
+    for tgt, (x, y) in sorted(positions.items()):
+        if not clear_of_regions(x, y):
+            print(f"[WARNING] {path}: target {tgt} ({x:.0f},{y:.0f}) overlaps a reaching_regions.py target")
     return trials
 
 
@@ -402,9 +433,9 @@ class Screen:
         x0, y0 = self.to_screen(0, 0)
         x1, y1 = self.to_screen(CANVAS_W, CANVAS_H)
         cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), GRID, 1)
-        current = test.trial["target"] if test.active() else None
-        for k, (x, y) in test.positions.items():
-            cv2.circle(img, self.to_screen(x, y), self.px(TARGET_RADIUS), TARGET if k == current else BLUE, -1)
+        if test.active():   # only the current target, empty (as in reaching_regions.py)
+            cv2.circle(img, self.to_screen(test.trial["x"], test.trial["y"]), self.px(TARGET_RADIUS),
+                       TARGET, self.px(3))
         if cursor is not None:   # before the start, or always with --show-cursor (debug)
             cv2.circle(img, self.to_screen(*cursor), self.px(15), WHITE, -1)
         # Hand-tracking indicator (no position information)
