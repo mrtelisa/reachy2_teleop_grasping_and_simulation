@@ -70,32 +70,36 @@ The 1200×650 canvas is scaled to the whole screen (the map's 2550×1500 space i
 
 ```
  1 | 2 | 3
- 4 | 5 | 6      5 = home: a disc (radius 40 px) at the centre
- 7 | 8 | 9      each outer region: a target circle (radius 70 px) at its centre
+ 4 | 5 | 6      5 = home: a circle at the centre
+ 7 | 8 | 9      each outer region: a target circle at its centre (all circles: radius 70 px)
 ```
 
 The sequence alternates home -> region -> home -> region .... There are **96 targets**, each of the 8 outer regions 12 times, in a seeded random order: every region appears once before any repeat, and never twice in a row. The sequence is frozen in [`config/cursor_regions.csv`](config/cursor_regions.csv), so it is the same for every participant. It is regenerated only if the file is missing (`N_REPETITIONS` in the script).
 
-How a session runs:
-1. **Home**: the centre disc is shown. It is reached when the cursor stays inside it for **0.5 s**. The **session timer starts the first time the cursor enters the disc**.
-2. **Region**: as soon as the home is reached, the disc disappears and the **yellow target circle at the centre of the region** is shown. For the first **1 s** (`HIDDEN_S`) the **cursor is not drawn**. The goal is to see whether the participant can reach the target from the learned map alone, without visual feedback. After that second the cursor reappears.
-3. The target is reached **as soon as the cursor enters the circle** (`TARGET_RADIUS`), whether it is still hidden or not. The centre disc is then shown again for the return.
-4. The session ends when every goal has been reached, or on `Q`/`Esc`.
+A session has **two parts**, each the whole sequence (96 targets), with a **3 min pause** in between (`N_PARTS`, `PAUSE_S`): 96 targets -> back to the home -> pause -> 96 targets.
+
+How a part runs:
+1. **Home**: the centre circle is shown. The **timer of the part starts the first time the cursor enters it**.
+2. **Region**: as soon as the home is reached, it disappears and the **yellow target circle at the centre of the region** is shown. For the first **1 s** (`HIDDEN_S`) the **cursor is not drawn**. The goal is to see whether the participant can reach the target from the learned map alone, without visual feedback. After that second the cursor reappears.
+3. Every goal, home or target, is reached when the cursor **stays inside its circle for 0.5 s** (`DWELL_S`, the same for both), whether the cursor is hidden or not. Leaving the circle restarts the count. A circle turns blue while the cursor is inside it (a target only once the cursor is visible). The home is then shown again for the return.
+4. After the last target of part 1 and the return to the home, the **pause** starts: no goal, the cursor is visible, the time left is on screen, and nothing is recorded. When it is over the home appears again, and part 2 starts at the first entry into it.
+   The **timer** at the bottom of the screen counts only the parts: it stops when the pause starts and stays still until the cursor enters the home again.
+5. The session ends when the last target of part 2 is reached, or on `Q`/`Esc`.
 
 Results go to `results_regions/`. A subject with previous sessions gets `_1`, `_2`, ... appended to the file names.
 
 | File | Content |
 |---|---|
-| `<subject>_regions_trials.csv` | one row per goal (home or region): times and metrics |
-| `<subject>_regions_blocks.csv` | one row per block of 8 targets (one repetition of every region): the learning curve, 12 blocks |
-| `<subject>_regions_trajectory.csv` | every cursor sample: trial, kind, region, t, x, y, `cursor_visible` |
-| `<subject>_regions_summary.json` | means over all region goals, the returns, per region and per block, plus the config |
+| `<subject>_regions_trials.csv` | one row per goal (home or region), with its `part` (1 = before, 2 = after the pause): times and metrics |
+| `<subject>_regions_blocks.csv` | one row per block of 8 targets (one repetition of every region), with its `part`: the learning curve, 12 blocks per part (24 in all) |
+| `<subject>_regions_trajectory.csv` | every cursor sample: part, trial, kind, region, t, x, y, `cursor_visible` (nothing during the pause) |
+| `<subject>_regions_summary.json` | `time_total` (= the on-screen timer), `time_part_1`, `time_part_2` (first entry into the home of the part -> its last goal); means over all region goals and the returns, **per part** (`parts`) and their difference (`part_2_vs_part_1`), per region and per block; the pause times (`pause`, `wall_clock_duration` = with the pause), plus the config |
 
 Metrics for every goal ([`reaching_metrics.py`](reachy_bomi/reaching_metrics.py), in canvas px). For a region goal, the ideal target point is the centre of its target circle.
 
 | Metric | Meaning |
 |---|---|
-| `reach_time` | goal shown -> entering the target circle (or the home disc) |
+| `reach_time` | goal shown -> entering the target (or home) circle, for the entry that completed the 0.5 s dwell |
 | `reaction_time`, `movement_time` | goal shown -> movement onset, and onset -> entering |
 | `path_length`, `normalized_path_length` | path / straight-line displacement (1 = perfectly straight) |
 | `max_deviation` | max perpendicular distance from the ideal line onset -> goal centre |
@@ -106,7 +110,7 @@ Metrics for region goals only:
 
 | Metric | Meaning |
 |---|---|
-| `reached_hidden` | 100 if the target circle was entered while the cursor was still hidden, else 0 |
+| `reached_hidden` | 100 if the target circle was entered (entry of the completed dwell) while the cursor was still hidden, else 0 |
 | `region_at_reveal`, `region_at_reveal_correct` | region of the cursor when it reappears, and 100 if it is the target |
 | `first_region`, `first_region_correct` | first region visited, i.e. stayed in for at least 0.25 s (the target counts at once), and 100 if it is the target |
 | `n_wrong_regions` | distinct other regions visited before the target |
@@ -157,7 +161,7 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── reaching_blind.py       # 3-target blind reaching test, pre/post training
 │   └── reaching_metrics.py     # per-trial kinematic metrics
 ├── config/
-│   ├── cursor_regions.csv      # frozen region sequence of the training (96 targets)
+│   ├── cursor_regions.csv      # frozen region sequence of the training (96 targets, done twice)
 │   └── blind_targets.csv       # frozen targets of the pre/post blind test (15 trials)
 ├── scripts/
 │   └── hand_landmarker.task    # MediaPipe model (tracked, see Requirements)
