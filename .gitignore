@@ -8,10 +8,8 @@ log/
 *.npz
 *.npy
 *.png
-# Blind reaching test outputs (reaching_regions.py)
+# Test outputs (reaching_regions.py, reaching_blind.py) and free exploration bags
 results_regions/
-results_training/
-results_robot/
-results_regions
-reachy_bomi/webcam_mediapipe.py
 results_blind/
+reachy_bomi_bags/
+reachy_bomi/webcam_mediapipe.py

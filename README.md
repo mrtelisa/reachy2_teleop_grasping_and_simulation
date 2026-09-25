@@ -1,8 +1,18 @@
 # reachy2_teleop_grasping_and_simulation
 
-Hand-driven BoMI cursor and the **9-region blind reaching test** used to check whether a participant can learn the hand -> cursor map before teleoperating Reachy 2.
+Hand-driven BoMI cursor for Reachy 2: the experimental protocol that checks whether a participant can learn the hand -> cursor map before teleoperating the robot.
 
-A webcam tracks the operator's hand with [MediaPipe](https://developers.google.com/mediapipe), and a calibrated autoencoder map turns the hand pose into a 2D cursor. The screen is split into the same 3×3 regions as the teleoperation interface. No robot is involved: everything runs on the operator PC.
+A webcam tracks the operator's hand with [MediaPipe](https://developers.google.com/mediapipe), and a calibrated autoencoder map turns the hand pose into a 2D cursor. The screen is split into the same 3×3 regions as the teleoperation interface.
+
+The protocol, in order:
+
+| Step | Script | Where |
+|---|---|---|
+| Map calibration (once) and customization (per participant) | `calibrate_bomi.py`, `customize_bomi.py` (`load_bomi.py` to try a map) | operator PC |
+| Blind test, **pre** training | `reaching_blind.py --phase pre` | operator PC |
+| Training: 96 targets + 3 min pause + 96 targets | `reaching_regions.py` | operator PC |
+| Blind test, **post** training | `reaching_blind.py --phase post` | operator PC |
+| Free exploration: driving Reachy 2 in simulation | `socket_client.py` + the ROS 2 package in the Reachy container | operator PC + container |
 
 ---
 
@@ -60,7 +70,7 @@ python3 load_bomi.py SUBJECT|NAME [--cam 0] [--model PATH]                      
 
 ---
 
-## Blind reaching test
+## Training — `reaching_regions.py`
 
 ```bash
 python3 reaching_regions.py --subject S001 [--calib <name>] [--cam 0] [--sequence file.csv]
@@ -147,6 +157,31 @@ Per-trial metrics (canvas px, distances from the target centre). The `reaching_m
 
 ---
 
+## Free exploration (simulation)
+
+The participant drives the simulated Reachy 2 mobile base (Gazebo, in Pollen's Reachy Docker container) with the same hand -> cursor chain and 9-region velocity map as the teleoperation, in a room with a few obstacles (`worlds/familiarization.world`).
+
+**Container side** (this package built in the container's ROS 2 workspace):
+
+```bash
+docker cp scripts/container_tweaks.sh reachy2:/tmp/ && docker exec reachy2 bash /tmp/container_tweaks.sh   # once per new container
+ros2 launch reachy_bomi bomi_bridge.launch.py   # leave it running: socket server on port 5051
+```
+
+**Operator PC**:
+
+```bash
+python3 socket_client.py <server_ip> --subject S001 --scenario familiarization [--record true] [--start-rviz false] [--show-cam]
+```
+
+1. The client sends the scenario to the socket server, which launches `bomi_control.launch.py`: Gazebo with the scenario's world, `cmd_vel_publisher` (velocities from the socket -> `/cmd_vel`, 20 Hz) and, with `--record true`, a ROS 2 bag. The noVNC view of Gazebo opens in the browser, and the client waits `--sim-wait` (10 s) for the simulation.
+2. **Cursor preview**: the cursor map (pinned in the top-left corner of the laptop screen, above the browser) moves, nothing is sent. Hold the cursor in region 5 for 5 s to start.
+3. **Control**: cursor -> 9-region velocity (`MAX_LINEAR` 1 m/s, `MAX_ANGULAR` 0.8 rad/s) -> socket -> robot. `Q`/`Esc` stops the robot; when the client disconnects, the server stops the scenario.
+
+Data: the bag (`/tf`, `/odom`, `/cmd_vel`, `/scan`) goes to `reachy_bomi_bags/Familiarization_<date>_<time>/`, next to the installed `launch/` folder of the package in the container. Scenarios are listed in `config/scenarios.yaml`.
+
+---
+
 ## Package layout
 
 ```
@@ -157,15 +192,27 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── calibrate_bomi.py       # once: 90 s continuous calibration + offline AE training -> calibrations/shared.npz
 │   ├── customize_bomi.py       # per participant: rotate/flip/scale/offset the shared map -> calibrations/<SUBJECT>_<date>_<time>.npz
 │   ├── load_bomi.py            # try a participant's / any saved map on the fullscreen cursor map
-│   ├── reaching_regions.py     # 9-region blind reaching test
+│   ├── reaching_regions.py     # training: 9-region reaching, 96 targets + pause + 96 targets
 │   ├── reaching_blind.py       # 3-target blind reaching test, pre/post training
-│   └── reaching_metrics.py     # per-trial kinematic metrics
+│   ├── reaching_metrics.py     # per-trial kinematic metrics
+│   ├── socket_client.py        # free exploration, operator PC: hand -> cursor -> velocities over TCP
+│   ├── socket_server.py        # free exploration, container: TCP -> ROS topics, launches the scenario
+│   ├── cmd_vel_publisher.py    # free exploration, container: socket velocities -> /cmd_vel
+│   └── scenarios.py            # free exploration: reads config/scenarios.yaml
+├── launch/
+│   ├── bomi_bridge.launch.py   # container: the socket server (left running)
+│   └── bomi_control.launch.py  # container: Gazebo + cmd_vel_publisher + bag, one scenario
+├── worlds/
+│   └── familiarization.world   # free exploration room
 ├── config/
 │   ├── cursor_regions.csv      # frozen region sequence of the training (96 targets, done twice)
-│   └── blind_targets.csv       # frozen targets of the pre/post blind test (15 trials)
+│   ├── blind_targets.csv       # frozen targets of the pre/post blind test (15 trials)
+│   └── scenarios.yaml          # free exploration scenarios (world, bag prefix)
 ├── scripts/
-│   └── hand_landmarker.task    # MediaPipe model (tracked, see Requirements)
+│   ├── hand_landmarker.task    # MediaPipe model (tracked, see Requirements)
+│   └── container_tweaks.sh     # one-off tweaks to the Reachy container (hides the lidar rays in Gazebo)
 ├── calibrations/               # shared_calib.npy, shared.npz, <SUBJECT>_<date>_<time>.npz (not tracked)
+├── package.xml, setup.py, setup.cfg, resource/   # ROS 2 (ament_python) package, for the container side
 ├── requirements.txt
 └── README.md
 ```

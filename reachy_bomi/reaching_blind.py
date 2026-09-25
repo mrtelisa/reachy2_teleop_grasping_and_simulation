@@ -467,7 +467,7 @@ def main() -> None:
     args = parser.parse_args()
 
     trials = load_trials(args.sequence)
-    print(f"Targets: " + ", ".join(f"{k}=({x:.0f},{y:.0f})" for k, (x, y) in sorted(target_positions(trials).items())))
+    print("Targets: " + ", ".join(f"{k}=({x:.0f},{y:.0f})" for k, (x, y) in sorted(target_positions(trials).items())))
     print(f"Sequence ({len(trials)} trials x {TRIAL_S:.0f}s): " + " ".join(str(tr["target"]) for tr in trials))
 
     subject = bomi._strip_npz(args.subject)

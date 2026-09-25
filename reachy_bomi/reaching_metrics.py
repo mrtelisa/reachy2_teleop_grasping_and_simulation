@@ -1,6 +1,6 @@
 """
-Per-trial kinematic metrics of the on-screen cursor reaching test
-(reaching_regions.py). Plain numpy/scipy.
+Per-trial kinematic metrics of the on-screen cursor reaching tests
+(reaching_regions.py, reaching_blind.py). Plain numpy/scipy.
 
 Metrics (None where not computable):
   reaction_time      target shown -> movement onset (speed > onset_speed)

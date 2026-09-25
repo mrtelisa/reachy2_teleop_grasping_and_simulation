@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 BoMI hand -> cursor chain shared by the tools in this folder (calibrate_bomi.py,
-customize_bomi.py, load_bomi.py, reaching_regions.py): webcam -> MediaPipe hand
+customize_bomi.py, load_bomi.py, reaching_regions.py, reaching_blind.py,
+socket_client.py): webcam -> MediaPipe hand
 landmarks -> autoencoder map -> Butterworth-filtered cursor on the
 BASE_WIDTH x BASE_HEIGHT virtual screen, plus the calibrations/ helpers.
 Nothing to run here.

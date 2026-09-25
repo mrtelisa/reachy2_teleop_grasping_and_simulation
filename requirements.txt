@@ -1,6 +1,6 @@
 # Python dependencies for the operator PC (venv), for BOTH branches:
 #   - main:                     reachy_control.py + calibrate/customize/load_bomi.py (real Reachy 2 via reachy2_sdk)
-#   - test-simulation-reaching: reaching_regions.py (blind reaching test) + the calibration tools
+#   - new_protocol:             calibration tools, reaching_blind.py, reaching_regions.py, socket_client.py (free exploration)
 #
 #   python3 -m venv ~/.venvs/reachy_bomi && source ~/.venvs/reachy_bomi/bin/activate
 #   pip install --upgrade pip && pip install -r requirements.txt
