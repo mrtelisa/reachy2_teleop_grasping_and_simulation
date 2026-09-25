@@ -29,6 +29,9 @@ Phases:
      grasp/place that fails once the arm is moving runs _abort_and_shutdown.
      main()'s finally block always powers the robot off and writes the
      session metrics (session_metrics.py).
+The robot drives with both grippers closed (close_grippers on power-on):
+execute_grasp opens the grasping arm's gripper only once the base is off.
+After the placement the released gripper stays open (the robot then powers off).
 """
 
 import argparse
@@ -328,6 +331,13 @@ def _replan_and_execute_place(reachy, plan: reachy_grasp.GraspPlan, geometry, ta
             return True
         print(f"[place] attempt {attempt}/{MAX_GRASP_ATTEMPTS} failed to execute -- retrying with a fresh plan")
     return False
+
+
+def close_grippers(reachy) -> None:
+    """Close both grippers: the robot never drives with a gripper open."""
+    for arm in (reachy.r_arm, reachy.l_arm):
+        if arm is not None and arm.gripper is not None:
+            arm.gripper.close()
 
 
 def _look_down(reachy) -> None:
@@ -759,8 +769,7 @@ def main() -> None:
 
     reachy.turn_on()
     reachy.goto_posture("default", duration=3.0, wait=True)
-    reachy.r_arm.gripper.open()
-    reachy.l_arm.gripper.open()
+    close_grippers(reachy)   # closed for the whole navigation (execute_grasp opens the one it needs)
     mobile_base.lidar.safety_enabled = True
     mobile_base.lidar.safety_slowdown_distance = bomi_teleop.LIDAR_SLOWDOWN_DISTANCE
     mobile_base.lidar.safety_critical_distance = bomi_teleop.LIDAR_CRITICAL_DISTANCE

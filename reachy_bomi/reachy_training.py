@@ -230,6 +230,7 @@ def main() -> None:
     # Same startup as the test (reachy_control.main)
     reachy.turn_on()
     reachy.goto_posture("default", duration=3.0, wait=True)
+    reachy_control.close_grippers(reachy)
     mobile_base.lidar.safety_enabled = True
     mobile_base.lidar.safety_slowdown_distance = bomi_teleop.LIDAR_SLOWDOWN_DISTANCE
     mobile_base.lidar.safety_critical_distance = bomi_teleop.LIDAR_CRITICAL_DISTANCE
