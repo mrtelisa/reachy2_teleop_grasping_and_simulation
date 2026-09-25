@@ -56,10 +56,11 @@ import reachy_pregrasp
 import reachy_selection
 import safety
 import bomi_teleop
+import display
 import graphs
 import session_metrics
 
-DEFAULT_ROBOT_IP = "192.168.0.123"
+DEFAULT_ROBOT_IP = "10.186.13.12"
 
 SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds, Repositioning -> object selection
 MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # Control dwells: -> pre-grasp pose, -> object selection
@@ -99,7 +100,7 @@ def bring_window_to_front(window_name: str, pos: tuple = None) -> None:
     cv2.imshow(window_name, np.zeros((300, 510, 3), dtype="uint8"))  # draw_cursor_map's size
     cv2.waitKey(1)
     if pos is not None:
-        cv2.moveWindow(window_name, *pos)
+        display.move(window_name, *pos)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
 
 
@@ -530,7 +531,7 @@ def _drive_until_center_dwell(cap, landmarker, bomi_map, cursor_filter, crs_x, c
             _metrics.region_tick(region, now)
 
         cv2.imshow(map_window, bomi_teleop.draw_cursor_map(crs_x, crs_y, region, message))
-        cv2.moveWindow(map_window, *bomi_teleop.MAP_WINDOW_POS)  # re-pin, the WM can move it
+        display.move(map_window, *bomi_teleop.MAP_WINDOW_POS)  # re-pin, the WM can move it
         cv2.setWindowProperty(map_window, cv2.WND_PROP_TOPMOST, 1)  # re-pin (same-process windows only)
         safety.raise_window(map_window)  # actually wins over the cross-process fullscreen camera_viewer window
 

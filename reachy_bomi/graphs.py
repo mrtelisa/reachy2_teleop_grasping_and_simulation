@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+import display
+
 GRAPHS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "graphs")
 
 
@@ -48,6 +50,7 @@ def show_point_cloud(point_cloud: np.ndarray, class_name: str) -> None:
 
     _save_fig(fig, f"point_cloud_{class_name}")
 
+    display.place_figure(fig)
     plt.show(block=False)
     plt.pause(0.001)
 
@@ -91,6 +94,7 @@ def show_grasp_plan(geometry, plan) -> None:
 
     _save_fig(fig, f"grasp_plan_{geometry.class_name}_{plan.arm_name}")
 
+    display.place_figure(fig)
     plt.show(block=False)
     # Several short pauses, not one: gives the window manager more chances
     # to map/raise the window before cv2.imshow + waitKey resume and starve
@@ -236,6 +240,7 @@ def show_grasp_and_place_plan(geometry, plan, place_plan, target_point: np.ndarr
 
     _save_fig(fig, f"grasp_place_plan_{geometry.class_name}_{plan.arm_name}")
 
+    display.place_figure(fig)
     plt.show(block=False)
     for _ in range(10):
         plt.pause(0.1)

@@ -44,6 +44,7 @@ from mediapipe.tasks.python.vision.core import vision_task_running_mode
 from reachy2_sdk import ReachySDK
 
 import bomi_teleop
+import display
 import reachy_control   # same windows, camera viewer, dwell and startup parameters as the test
 import reachy_selection
 import safety
@@ -120,7 +121,7 @@ def training_navigation(cap, landmarker, bomi_map, mobile_base, cursor_filter, c
             _metrics.region_tick(region, now)
 
         cv2.imshow(map_window, bomi_teleop.draw_cursor_map(crs_x, crs_y, region, message))
-        cv2.moveWindow(map_window, *bomi_teleop.MAP_WINDOW_POS)  # re-pin, the WM can move it
+        display.move(map_window, *bomi_teleop.MAP_WINDOW_POS)  # re-pin, the WM can move it
         cv2.setWindowProperty(map_window, cv2.WND_PROP_TOPMOST, 1)  # re-pin (same-process windows only)
         safety.raise_window(map_window)  # actually wins over the cross-process fullscreen camera_viewer window
 

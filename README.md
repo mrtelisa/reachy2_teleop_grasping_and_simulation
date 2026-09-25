@@ -80,6 +80,8 @@ Or just run the scripts directly with `python3` — no build step required, sinc
 
 ## Usage
 
+Every window the scripts open (cursor map, cameras, confirmations, matplotlib graphs, the `camera_viewer.py` subprocess) goes on the **laptop's built-in screen**, whichever terminal or monitor you launch them from ([`display.py`](reachy_bomi/display.py)). Fullscreen windows fill that screen. To use another screen, set `BOMI_SCREEN` to its `xrandr` output name (e.g. `BOMI_SCREEN=DP-1`). The screens are read once at start-up: if you unplug/replug the monitor while a script runs, restart it.
+
 ### Full BoMI flow: teleop + grasp — `reachy_control.py`
 
 The real entry point — everything else in the package exists to support this.
@@ -181,6 +183,7 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── reachy_grasp.py              # library: grasp planning/execution (pose math, IK search, execute_grasp)
 │   ├── camera_viewer.py             # standalone script: head or torso camera live feed (--camera), spawned by reachy_control.py as its own process
 │   ├── stream.py                    # library: camera-streaming primitives (torso + teleop cameras)
+│   ├── display.py                   # library: puts every window (cv2 + matplotlib) on the laptop screen
 │   ├── graphs.py                    # library: matplotlib diagnostics (point cloud stages, grasp plan), figures saved to graphs/
 │   ├── safety.py                    # library: quit/shutdown safety net (local check + OS-level global watcher)
 │   └── yolov8n.pt                   # YOLOv8 weights (auto-downloaded by ultralytics on first run)

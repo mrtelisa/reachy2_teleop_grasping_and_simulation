@@ -25,6 +25,7 @@ from tensorflow.keras import Model
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.optimizers import Adam
 
+import display
 import safety
 
 HAND_CONNECTIONS = hand_landmarker.HandLandmarksConnections.HAND_CONNECTIONS
@@ -56,7 +57,7 @@ DEFAULT_MODEL_PATH = os.path.join(
 CAM_WINDOW_NAME = "BoMI - Camera"
 MAP_WINDOW_NAME = "BoMI - Cursor Map"
 
-MAP_WINDOW_POS = (0, 0)
+MAP_WINDOW_POS = (0, 0)   # top-left corner of the map, relative to the display.py screen (the laptop)
 
 CALIB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "calibrations")
 
@@ -600,7 +601,7 @@ def cursor_preview_phase(cap, landmarker, bomi_map: BoMIMap, cursor_filter: Curs
         if show_cam:
             cv2.imshow(cam_window, frame)
         cv2.imshow(map_window, draw_cursor_map(crs_x, crs_y, region, "(preview - not sent)"))
-        cv2.moveWindow(map_window, *MAP_WINDOW_POS)  # re-pin, the WM can move it
+        display.move(map_window, *MAP_WINDOW_POS)  # re-pin, the WM can move it
         cv2.setWindowProperty(map_window, cv2.WND_PROP_TOPMOST, 1)  # re-pin (same-process windows only)
         safety.raise_window(map_window)  # actually wins over the cross-process fullscreen camera_viewer window
         if on_frame is not None:

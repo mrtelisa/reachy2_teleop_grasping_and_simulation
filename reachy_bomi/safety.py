@@ -17,6 +17,8 @@ import tty
 import cv2
 from reachy2_sdk import ReachySDK
 
+import display  # noqa: F401  every window on the laptop screen (see display.py)
+
 # Back-up distance and in-place rotation before powering down next to the table
 SHUTDOWN_REVERSE_CM = 20.0
 SHUTDOWN_ROTATION_DEG = 180.0
