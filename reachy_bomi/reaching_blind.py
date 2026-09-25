@@ -1,33 +1,31 @@
 #!/usr/bin/env python3
 """
-Fullscreen 3-target blind reaching test (pre/post training).
+Fullscreen 4-target blind reaching test, repeated N_TESTS (5) times per participant.
 
 The hand drives a cursor through the BoMI chain of bomi.py (webcam ->
 MediaPipe -> autoencoder map -> Butterworth filter) on the same 1200 x 650
 canvas as reaching_regions.py, scaled to the whole screen. During the test
 the cursor is NEVER drawn: the participant only sees the current target, an
-empty yellow circle (radius TARGET_RADIUS) shown on its own, as the targets of
-reaching_regions.py (the other targets are not on screen). Every TRIAL_S (4 s)
+empty yellow circle shown on its own, exactly as the target of the same region
+in reaching_regions.py (same position and radius; the other targets are not
+on screen). Every TRIAL_S (4 s)
 it is replaced by the next target, whatever the cursor did. The cursor is
 tracked the whole time, so the results say whether (and how well) the
 participant got there from the learned map alone.
 
-Targets: config/blind_targets.csv, one trial per row (trial, target, x, y),
-any other file with --sequence. It is generated once if missing: 3 positions
-drawn at random (seeded; one per third of the screen width, at least
-MIN_SEPARATION px apart, MIN_CENTRE_DIST px from the centre, MIN_Y_SPREAD px
-between the highest and the lowest, and not overlapping any circle of
-reaching_regions.py -- its 8 targets and the home -- with REGION_CLEARANCE px
-between the two circles) and N_REPETITIONS (5) visits of each
--> 15 trials, in seeded random order (all 3 once before any repeat, never the
-same twice in a row). The file is frozen, so the pre and post sessions (and
-every participant) see exactly the same targets.
+Targets: the training targets of TARGET_REGIONS (2, 4, 5, 9: top, left,
+centre/home, bottom-right), each numbered as its region. Sequence:
+config/blind_targets.csv, one trial per row (trial, target, x, y), any other
+file with --sequence. It is generated once if missing: N_REPETITIONS (3)
+visits of each target -> 12 trials, in seeded random order (all 4 once before
+any repeat, never the same twice in a row). The file is frozen, so the 5 tests (and every
+participant) see exactly the same targets.
 
 Session flow: before the start only the cursor is shown (the only time it is
 visible, no target), so the participant can see where the hand is.
 After START_CURSOR_S (2 s) ENTER (experimenter) is accepted: it starts the
 session, the cursor disappears and the first target appears at once;
-after 15 x 4 s the session ends (or on Q/ESC). A small dot in the top-right
+after 12 x 4 s the session ends (or on Q/ESC). A small dot in the top-right
 corner is green while the hand is tracked, grey when it is lost (no position
 information). The webcam with the tracked hand is shown in a separate window
 on the experimenter's monitor (never to the participant).
@@ -43,8 +41,8 @@ in canvas px from the target centre):
   end_error           mean distance over the last END_WINDOW_S (1 s)
   min_error           closest approach
   relative_final_error  final_error / initial_error (0 = perfect, 1 = did not get closer)
-  chosen_target, chosen_correct   target of the 3 closest to the cursor when the
-                      target changes (all 3 count, even if only the current
+  chosen_target, chosen_correct   target of the 4 closest to the cursor when the
+                      target changes (all 4 count, even if only the current
                       one is on screen), and 100 if it is the current one
   hand_lost           % of the window without a tracked hand
 and the reaching_metrics.py kinematics (reaction_time, normalized_path_length,
@@ -53,28 +51,27 @@ first entry (hits) or to its end (misses). "success" in the files means the
 trial ran its full TRIAL_S (False only for the trial cut by an abort): the
 means are over the completed trials.
 
-Results (--phase pre|post; a subject with previous sessions of the same phase
-gets _1, _2, ... appended):
-  results_blind/<subject>_blind_<phase>_trials.csv       one row per trial
-  results_blind/<subject>_blind_<phase>_blocks.csv       one row per block of 3 trials (each target once)
-  results_blind/<subject>_blind_<phase>_trajectory.csv   every cursor sample (trial, target, t, x, y, hand_detected)
-  results_blind/<subject>_blind_<phase>_summary.json     means (all, per target, per block), config
-A post session is compared with the subject's latest pre session: the
-differences (post - pre) are printed and stored in the summary.
+Results (--test 1..5; a subject who repeats the same test number gets _1,
+_2, ... appended):
+  results_blind/<subject>_blind_test<N>_trials.csv       one row per trial
+  results_blind/<subject>_blind_test<N>_blocks.csv       one row per block of 4 trials (each target once)
+  results_blind/<subject>_blind_test<N>_trajectory.csv   every cursor sample (trial, target, t, x, y, hand_detected)
+  results_blind/<subject>_blind_test<N>_summary.json     means (all, per target, per block), config
+Test N is compared with the subject's latest session of every earlier test
+(1..N-1): the main metrics of each and the differences (test N - test k) are
+printed and stored in the summary (comparison_with_previous).
 
 Usage:
-    python3 reaching_blind.py --subject S001 --phase pre|post [--calib <name>] [--cam 0] [--sequence file.csv]
+    python3 reaching_blind.py --subject S001 --test 1..5 [--calib <name>] [--cam 0] [--sequence file.csv]
 Keys: ENTER = start (after the first 2 s), Q / ESC = abort (results so far are still saved).
 """
 
 import argparse
 import csv
 import datetime
-import glob
 import json
 import math
 import os
-import re
 import sys
 import time
 
@@ -84,22 +81,19 @@ import numpy as np
 import bomi
 from reaching_metrics import METRIC_KEYS, block_summaries, compute_trial_metrics, summarize
 import reaching_regions
-from reaching_regions import CANVAS_H, CANVAS_W, session_name
+from reaching_regions import CANVAS_H, CANVAS_W, latest_summary, session_name
 
-# --- Geometry (canvas px, same canvas as reaching_regions.py) ---
-TARGET_RADIUS = 60
-MIN_SEPARATION = 400     # min distance between two target centres
-MIN_CENTRE_DIST = 150    # min distance of a target centre from the canvas centre (rest position)
-MIN_Y_SPREAD = 250       # min vertical distance between the highest and the lowest target
-EDGE_MARGIN = TARGET_RADIUS + 30
-REGION_CLEARANCE = 20    # min gap between a target and a reaching_regions.py circle (they never overlap)
+# --- Targets: the reaching_regions.py targets of these regions (same canvas, position and radius) ---
+TARGET_REGIONS = (2, 4, 5, 9)
+TARGET_RADIUS = reaching_regions.TARGET_RADIUS
 
 # --- Sequence ---
 SEQUENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "blind_targets.csv")
-N_TARGETS = 3
-N_REPETITIONS = 5        # default sequence: every target this many times (3 x 5 = 15 trials)
+N_TARGETS = len(TARGET_REGIONS)
+N_REPETITIONS = 3        # default sequence: every target this many times (4 x 3 = 12 trials)
 SEQUENCE_SEED = 20
-BLOCK_SIZE = N_TARGETS   # statistics per block of 3 consecutive trials (= every target once)
+BLOCK_SIZE = N_TARGETS   # statistics per block of 4 consecutive trials (= every target once)
+N_TESTS = 5              # blind tests per participant (--test 1..N_TESTS)
 
 # --- Timing ---
 START_CURSOR_S = 2.0     # the cursor is shown at least this long before ENTER can start the session
@@ -114,7 +108,7 @@ BLIND_KEYS = ("hit", "time_in_target", "on_target_at_end", "initial_error", "fin
               "min_error", "relative_final_error", "chosen_target", "chosen_correct", "hand_lost")
 # Averaged in the summary (target numbers are not)
 TRIAL_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k != "chosen_target")
-# Printed at the end and compared pre -> post
+# Printed at the end and compared with the earlier tests
 MAIN_KEYS = ("hit", "chosen_correct", "final_error", "end_error", "relative_final_error",
              "time_in_target", "reach_time", "normalized_path_length")
 
@@ -128,60 +122,19 @@ GRID = (90, 90, 90)
 TARGET = (0, 255, 255)   # current target (empty circle, as in reaching_regions.py)
 
 
-def region_circles() -> list:
-    """(x, y, radius) of the circles of reaching_regions.py: the home and the
-    target at the centre of every outer region."""
-    circles = []
-    for region in range(1, 10):
-        x0, y0, x1, y1 = reaching_regions.region_bounds(region)
-        radius = reaching_regions.HOME_RADIUS if region == reaching_regions.HOME_REGION \
-            else reaching_regions.TARGET_RADIUS
-        circles.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0, radius))
-    return circles
-
-
-def clear_of_regions(x: float, y: float) -> bool:
-    """True if a target centred in (x, y) is at least REGION_CLEARANCE px away
-    from every reaching_regions.py circle."""
-    return all(math.hypot(x - cx, y - cy) >= TARGET_RADIUS + r + REGION_CLEARANCE
-               for cx, cy, r in region_circles())
-
-
-def generate_positions(seed: int = SEQUENCE_SEED) -> list:
-    """N_TARGETS random (x, y) target centres spread over the screen: one per
-    vertical strip (N_TARGETS strips of equal width), inside the canvas
-    (EDGE_MARGIN from the border), MIN_SEPARATION apart, MIN_CENTRE_DIST from
-    the centre, at least MIN_Y_SPREAD between the highest and the lowest,
-    and clear of the reaching_regions.py circles (clear_of_regions).
-    The strips are assigned to the targets in random order."""
-    rng = np.random.default_rng(seed)
-    strip = CANVAS_W / N_TARGETS
-    for _ in range(500000):   # rare draws: the regions leave two narrow bands free
-        pts = []
-        for col in rng.permutation(N_TARGETS):
-            x = float(rng.uniform(max(EDGE_MARGIN, col * strip), min(CANVAS_W - EDGE_MARGIN, (col + 1) * strip)))
-            y = float(rng.uniform(EDGE_MARGIN, CANVAS_H - EDGE_MARGIN))
-            if math.hypot(x - CANVAS_W / 2.0, y - CANVAS_H / 2.0) < MIN_CENTRE_DIST:
-                break   # restart the draw
-            if not clear_of_regions(x, y):
-                break
-            if any(math.hypot(x - px, y - py) < MIN_SEPARATION for px, py in pts):
-                break
-            pts.append((round(x), round(y)))
-        ys = [y for _, y in pts]
-        if len(pts) == N_TARGETS and max(ys) - min(ys) >= MIN_Y_SPREAD:
-            return pts
-    raise RuntimeError("could not place the targets: lower MIN_SEPARATION / MIN_CENTRE_DIST / MIN_Y_SPREAD "
-                       "/ REGION_CLEARANCE")
+def target_position(region: int) -> tuple:
+    """(x, y) of the reaching_regions.py target of a region (the home for region 5)."""
+    x0, y0, x1, y1 = reaching_regions.region_bounds(region)
+    return round((x0 + x1) / 2.0), round((y0 + y1) / 2.0)
 
 
 def generate_sequence(repetitions: int = N_REPETITIONS, seed: int = SEQUENCE_SEED) -> list:
-    """Targets 1..N_TARGETS `repetitions` times in seeded random order (all of
-    them once before any repeat, never the same twice in a row)."""
+    """TARGET_REGIONS `repetitions` times in seeded random order (all of them
+    once before any repeat, never the same twice in a row)."""
     rng = np.random.default_rng(seed + 1)
     order, last = [], None
     for _ in range(repetitions):
-        perm = [int(i) + 1 for i in rng.permutation(N_TARGETS)]
+        perm = [TARGET_REGIONS[i] for i in rng.permutation(N_TARGETS)]
         if perm[0] == last:
             perm.append(perm.pop(0))
         order += perm
@@ -190,16 +143,15 @@ def generate_sequence(repetitions: int = N_REPETITIONS, seed: int = SEQUENCE_SEE
 
 
 def load_trials(path: str = SEQUENCE_FILE) -> list:
-    """Trials of `path` (header trial,target,x,y; one row per trial) as dicts
-    target, x, y. The default file is generated once if missing."""
+    """Trials of `path` (header trial,target,x,y; one row per trial; target =
+    its region) as dicts target, x, y. The default file is generated once if missing."""
     if path == SEQUENCE_FILE and not os.path.exists(path):
-        positions = generate_positions()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["trial", "target", "x", "y"])
             for i, tgt in enumerate(generate_sequence(), start=1):
-                w.writerow([i, tgt, *positions[tgt - 1]])
+                w.writerow([i, tgt, *target_position(tgt)])
         print(f"[sequence] generated the default targets -> {path} (commit this file)")
     trials, positions = [], {}
     with open(path, encoding="utf-8") as f:
@@ -212,9 +164,6 @@ def load_trials(path: str = SEQUENCE_FILE) -> list:
             trials.append({"target": tgt, "x": x, "y": y})
     if not trials:
         raise ValueError(f"{path}: no trials found")
-    for tgt, (x, y) in sorted(positions.items()):
-        if not clear_of_regions(x, y):
-            print(f"[WARNING] {path}: target {tgt} ({x:.0f},{y:.0f}) overlaps a reaching_regions.py target")
     return trials
 
 
@@ -253,27 +202,19 @@ def blind_metrics(samples: list, hand: list, goal: tuple, positions: dict, targe
     return m
 
 
-def latest_pre_summary(subject: str, results_dir: str) -> str:
-    """Path of the subject's latest pre-training summary, or None."""
-    prefix = f"{subject}_blind_pre"
-    paths = [p for p in glob.glob(os.path.join(results_dir, prefix + "*_summary.json"))
-             if re.fullmatch(rf"{re.escape(prefix)}(_\d+)?_summary\.json", os.path.basename(p))]
-    return max(paths, key=os.path.getmtime) if paths else None
-
-
-def compare(pre: dict, post: dict) -> dict:
-    """{metric: {pre, post, delta}} of the MAIN_KEYS means (delta = post - pre)."""
+def compare(earlier: dict, current: dict) -> dict:
+    """{metric: {earlier, current, delta}} of the MAIN_KEYS means (delta = current - earlier)."""
     out = {}
     for k in MAIN_KEYS:
-        a, b = pre["all"].get(f"mean_{k}"), post["all"].get(f"mean_{k}")
-        out[k] = {"pre": a, "post": b, "delta": (b - a) if a is not None and b is not None else None}
+        a, b = earlier["all"].get(f"mean_{k}"), current["all"].get(f"mean_{k}")
+        out[k] = {"earlier": a, "current": b, "delta": (b - a) if a is not None and b is not None else None}
     return out
 
 
 class BlindTest:
-    def __init__(self, subject: str, phase: str, trials: list, results_dir: str = RESULTS_DIR) -> None:
+    def __init__(self, subject: str, test_number: int, trials: list, results_dir: str = RESULTS_DIR) -> None:
         self.subject = subject
-        self.phase = phase
+        self.test_number = test_number
         self.trials = trials
         self.positions = target_positions(trials)
         self.results = []
@@ -282,7 +223,7 @@ class BlindTest:
         self.results_dir = results_dir
         os.makedirs(results_dir, exist_ok=True)
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.base = os.path.join(results_dir, session_name(subject, f"blind_{phase}", results_dir))
+        self.base = os.path.join(results_dir, session_name(subject, f"blind_test{test_number}", results_dir))
 
         # Session/trial state (times are time.time())
         self.t_start = None
@@ -364,7 +305,7 @@ class BlindTest:
             self._record_trial(t, success=False, reason=reason)
         blocks = block_summaries(self.results, BLOCK_SIZE, keys=TRIAL_KEYS)
         summary = {
-            "subject": self.subject, "phase": self.phase, "end_reason": reason,
+            "subject": self.subject, "test": self.test_number, "end_reason": reason,
             "n_trials_total": len(self.trials),
             "session_duration": (t - self.t_start) if self.t_start is not None else 0.0,
             "timestamp": self.timestamp,
@@ -384,12 +325,14 @@ class BlindTest:
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }
-        if self.phase == "post":
-            pre_path = latest_pre_summary(self.subject, self.results_dir)
-            if pre_path:
-                with open(pre_path, encoding="utf-8") as f:
-                    summary["comparison_with_pre"] = {"pre_summary": os.path.basename(pre_path),
-                                                      **compare(json.load(f), summary)}
+        # Test N vs the latest session of every earlier test 1..N-1
+        previous = {}
+        for k in range(1, self.test_number):
+            path = latest_summary(f"{self.subject}_blind_test{k}", self.results_dir)
+            if path:
+                with open(path, encoding="utf-8") as f:
+                    previous[str(k)] = {"summary": os.path.basename(path), **compare(json.load(f), summary)}
+        summary["comparison_with_previous"] = previous
         if self.results:
             with open(self.base + "_trials.csv", "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=list(self.results[0].keys()))
@@ -454,8 +397,8 @@ def main() -> None:
                         help="Participant id: loads calibrations/<subject>.npz if it exists, else the latest "
                              "calibrations/<subject>_<date>_<time>.npz from customize_bomi.py; also names the "
                              "result files (default: S000)")
-    parser.add_argument("--phase", required=True, choices=("pre", "post"),
-                        help="Before or after the training (a post session is compared with the latest pre)")
+    parser.add_argument("--test", required=True, type=int, choices=range(1, N_TESTS + 1), metavar=f"1..{N_TESTS}",
+                        help="Number of the blind test (compared with the subject's earlier tests)")
     parser.add_argument("--calib", default=None,
                         help="Map to load (calibrations/<NAME>.npz) instead of the participant's own")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
@@ -493,7 +436,7 @@ def main() -> None:
         sys.exit(1)
     landmarker = bomi.create_hand_landmarker(args.model)
 
-    test = BlindTest(subject, args.phase, trials)
+    test = BlindTest(subject, args.test, trials)
     bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
     cursor_filter = bomi.CursorFilter()
@@ -501,7 +444,7 @@ def main() -> None:
     sx, sy = CANVAS_W / bomi.BASE_WIDTH, CANVAS_H / bomi.BASE_HEIGHT
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
 
-    print(f"\n=== BLIND REACHING ({args.phase}) === {len(trials)} targets. ENTER = start, Q = abort")
+    print(f"\n=== BLIND REACHING (test {args.test}/{N_TESTS}) === {len(trials)} targets. ENTER = start, Q = abort")
     t_launch = time.time()
     try:
         while not test.end_reason:
@@ -534,14 +477,17 @@ def main() -> None:
           f"hit {fmt(a['mean_hit'], '%')}, closest target correct {fmt(a['mean_chosen_correct'], '%')}, "
           f"final error {fmt(a['mean_final_error'], 'px')}, relative final error {fmt(a['mean_relative_final_error'])}, "
           f"time in target {fmt(a['mean_time_in_target'], '%')}")
-    cmp = summary.get("comparison_with_pre")
-    if cmp:
-        print(f"\n  post vs pre ({cmp['pre_summary']}):")
-        for k in MAIN_KEYS:
-            c = cmp[k]
-            print(f"    {k:24s} pre {fmt(c['pre']):>8s}   post {fmt(c['post']):>8s}   delta {fmt(c['delta']):>8s}")
-    elif args.phase == "post":
-        print(f"\n  no pre session of '{subject}' in {RESULTS_DIR}: nothing to compare")
+    previous = summary["comparison_with_previous"]
+    if previous:
+        print(f"\n  test {args.test} vs earlier tests (" + ", ".join(f"{k}: {c['summary']}" for k, c in previous.items())
+              + "); delta = this test - that test:")
+        print(f"    {'':24s}" + "".join(f"{'test ' + k:>9s}" for k in previous) + f"{'test ' + str(args.test):>9s}"
+              + "".join(f"{'d vs ' + k:>9s}" for k in previous))
+        for m in MAIN_KEYS:
+            print(f"    {m:24s}" + "".join(f"{fmt(c[m]['earlier']):>9s}" for c in previous.values())
+                  + f"{fmt(a[f'mean_{m}']):>9s}" + "".join(f"{fmt(c[m]['delta']):>9s}" for c in previous.values()))
+    elif args.test > 1:
+        print(f"\n  no earlier test of '{subject}' in {RESULTS_DIR}: nothing to compare")
     print(f"  results: {test.base}_trials.csv / _blocks.csv / _trajectory.csv / _summary.json")
 
 

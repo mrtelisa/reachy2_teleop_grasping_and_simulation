@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fullscreen 9-region blind reaching test, in two parts separated by a pause.
+Fullscreen 9-region blind reaching training (pre/post the blind test).
 
 The hand drives an on-screen cursor through the BoMI chain of bomi.py
 (webcam -> MediaPipe -> autoencoder map -> Butterworth filter); the map's
@@ -21,12 +21,10 @@ outer region N_REPETITIONS (12) times -> 96 targets, in seeded random order
 (all 8 once before any repeat, never the same twice in a row), a home before
 each.
 
-Session: N_PARTS (2) parts, each the whole sequence (96 targets):
-  part 1 -> back to the home -> PAUSE_S (3 min) pause -> part 2
-During the pause no goal is shown and nothing is recorded: the cursor is
-visible, with the time left. After it the home is shown again and part 2
-starts the first time the cursor enters it. The session ends when the last
-target of part 2 is reached (or on Q/ESC).
+Session: the whole sequence once (96 targets); it ends when the last target
+is reached (or on Q/ESC) and the results are saved. The protocol runs two
+sessions, --phase pre (training before the blind test) and --phase post
+(training after it).
 
 Trial flow:
   home goal   -> the home circle is shown (no target).
@@ -41,10 +39,8 @@ Every goal (home or region) is reached when the cursor stays inside its
 circle DWELL_S (0.5 s), hidden or not; leaving it restarts the dwell, and
 reach_time counts to the entry that completed the dwell. A circle turns blue
 while the cursor is inside it (a target only once the cursor is visible).
-The timer of a part starts when the cursor enters its home for the first time
-and stops at its last goal. The session timer on screen is part 1 + part 2:
-it stops when the pause starts and stays still until the home is entered
-again. The summary has time_total, time_part_1 and time_part_2.
+The session timer starts when the cursor enters the home for the first time
+and stops at the last goal (time_total in the summary).
 
 Metrics of every goal: the reaching_metrics.py kinematics
 (reaction_time, normalized_path_length, dimensionless_jerk, n_speed_peaks,
@@ -58,25 +54,28 @@ Metrics of every goal: the reaching_metrics.py kinematics
                             stayed in for MIN_VISIT_S (the target counts at once)
   first_region_correct      100 if it was the target, else 0
   n_wrong_regions           distinct other regions visited before the target
-Averages (mean_* in the summary) over all region goals, per part (before vs
-after the pause, and the difference part 2 - part 1), per region, and per
+Averages (mean_* in the summary) over all region goals, per region, and per
 block of BLOCK_SIZE (8) consecutive targets = one repetition of every region
-(12 blocks per part, 24 in all: learning curve).
+(12 blocks: learning curve).
 
-Results (a subject with previous sessions gets _1, _2, ... appended):
-  results_regions/<subject>_regions_trials.csv       one row per goal (with its part)
-  results_regions/<subject>_regions_blocks.csv       one row per block of 8 targets
-  results_regions/<subject>_regions_trajectory.csv   every cursor sample (part, trial, t, x, y, cursor_visible)
-  results_regions/<subject>_regions_summary.json     means (all, per part, part 2 vs 1, per region, per block), config
+Results (--phase pre|post; a subject with previous sessions of the same phase
+gets _1, _2, ... appended):
+  results_regions/<subject>_regions_<phase>_trials.csv       one row per goal
+  results_regions/<subject>_regions_<phase>_blocks.csv       one row per block of 8 targets
+  results_regions/<subject>_regions_<phase>_trajectory.csv   every cursor sample (trial, t, x, y, cursor_visible)
+  results_regions/<subject>_regions_<phase>_summary.json     means (regions, returns, per region, per block), config
+A post session is compared with the subject's latest pre session: the
+differences (post - pre) are printed and stored in the summary.
 
 Usage:
-    python3 reaching_regions.py --subject S001 [--calib <name>] [--cam 0] [--sequence file.csv]
+    python3 reaching_regions.py --subject S001 --phase pre|post [--calib <name>] [--cam 0] [--sequence file.csv]
 Keys: Q / ESC = abort (results so far are still saved).
 """
 
 import argparse
 import csv
 import datetime
+import glob
 import json
 import math
 import os
@@ -106,11 +105,9 @@ SEQUENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "
 N_REPETITIONS = 12       # default sequence: every outer region this many times (8 x 12 = 96 targets)
 SEQUENCE_SEED = 20
 BLOCK_SIZE = 8           # statistics per block of 8 consecutive targets (= one repetition of every region)
-N_PARTS = 2              # the whole sequence this many times, with a pause in between
 
 # --- Timing ---
 DWELL_S = 0.5            # the cursor must stay in a goal circle (home or target) this long
-PAUSE_S = 180.0          # pause between two parts
 HIDDEN_S = 1.0           # the cursor is not drawn for this long after the target is shown
 MIN_VISIT_S = 0.25       # a region counts as visited if the cursor stays in it this long
 
@@ -122,6 +119,9 @@ BLIND_KEYS = ("reached_hidden", "region_at_reveal", "region_at_reveal_correct",
               "first_region", "first_region_correct", "n_wrong_regions")
 # Averaged in the summary (region numbers are not)
 REGION_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k not in ("region_at_reveal", "first_region"))
+# Printed at the end and compared pre -> post
+MAIN_KEYS = ("reach_time", "normalized_path_length", "reached_hidden", "region_at_reveal_correct",
+             "first_region_correct", "n_wrong_regions")
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_regions")
 WINDOW = "BoMI - Reaching (regions)"
@@ -241,42 +241,22 @@ def load_sequence(path: str = SEQUENCE_FILE) -> list:
     return seq
 
 
-def build_trials(sequence: list, parts: int = N_PARTS) -> list:
-    """One goal per region of the sequence, the whole sequence `parts` times:
-    kind ("home" for region 5, "region" otherwise), region, part (1..parts),
-    target_number (the region goals counted 1..n over the whole session; a
-    home takes the number of the region goal that follows it),
-    part_target_number (the same, counted within its part), x, y (goal
-    centre: the home, or the centre of the region). Every part but the last
-    ends with a home (the return from its last target) marked pause_after."""
+def build_trials(sequence: list) -> list:
+    """One goal per region of the sequence: kind ("home" for region 5, "region"
+    otherwise), region, target_number (the region goals counted 1..n; a home
+    takes the number of the region goal that follows it), x, y (goal centre:
+    the home, or the centre of the region)."""
     trials, n_targets = [], 0
-    for part in range(1, parts + 1):
-        first = n_targets
-        for r in sequence:
-            if r == HOME_REGION:
-                trials.append({"kind": "home", "region": r, "part": part, "target_number": n_targets + 1,
-                               "part_target_number": n_targets - first + 1,
-                               "x": CANVAS_W / 2.0, "y": CANVAS_H / 2.0})
-            else:
-                n_targets += 1
-                x0, y0, x1, y1 = region_bounds(r)
-                trials.append({"kind": "region", "region": r, "part": part, "target_number": n_targets,
-                               "part_target_number": n_targets - first,
-                               "x": (x0 + x1) / 2.0, "y": (y0 + y1) / 2.0})
-        if part < parts:
-            trials.append({"kind": "home", "region": HOME_REGION, "part": part, "target_number": n_targets,
-                           "part_target_number": n_targets - first,
-                           "x": CANVAS_W / 2.0, "y": CANVAS_H / 2.0, "pause_after": True})
+    for r in sequence:
+        if r == HOME_REGION:
+            trials.append({"kind": "home", "region": r, "target_number": n_targets + 1,
+                           "x": CANVAS_W / 2.0, "y": CANVAS_H / 2.0})
+        else:
+            n_targets += 1
+            x0, y0, x1, y1 = region_bounds(r)
+            trials.append({"kind": "region", "region": r, "target_number": n_targets,
+                           "x": (x0 + x1) / 2.0, "y": (y0 + y1) / 2.0})
     return trials
-
-
-def compare_parts(first: dict, second: dict, keys=REGION_KEYS) -> dict:
-    """{metric: {part_1, part_2, delta}} of two summarize() results (delta = part 2 - part 1)."""
-    out = {}
-    for k in ("success_rate",) + tuple(f"mean_{k}" for k in keys):
-        x, y = first.get(k), second.get(k)
-        out[k] = {"part_1": x, "part_2": y, "delta": (y - x) if x is not None and y is not None else None}
-    return out
 
 
 def session_name(subject: str, sequence: str, results_dir: str) -> str:
@@ -292,28 +272,39 @@ def session_name(subject: str, sequence: str, results_dir: str) -> str:
     return f"{prefix}_{max(used, default=0) + 1}"
 
 
-class RegionsTest:
-    def __init__(self, subject: str, trials: list, results_dir: str = RESULTS_DIR,
-                 sequence: str = "regions") -> None:
-        self.subject = subject
-        self.trials = trials
-        self.sequence = sequence
-        self.results = []
-        self.trajectory = []   # every cursor sample: (part, trial, kind, region, t, x, y, cursor_visible)
-        self.n_parts = max(tr["part"] for tr in trials)
+def latest_summary(prefix: str, results_dir: str) -> str:
+    """Path of the latest <results_dir>/<prefix>[_N]_summary.json, or None."""
+    paths = [p for p in glob.glob(os.path.join(results_dir, prefix + "*_summary.json"))
+             if re.fullmatch(rf"{re.escape(prefix)}(_\d+)?_summary\.json", os.path.basename(p))]
+    return max(paths, key=os.path.getmtime) if paths else None
 
+
+def compare(pre: dict, post: dict) -> dict:
+    """{metric: {pre, post, delta}} of the MAIN_KEYS region means (delta = post - pre)."""
+    out = {}
+    for k in ("success_rate",) + tuple(f"mean_{k}" for k in MAIN_KEYS):
+        a, b = pre["regions"].get(k), post["regions"].get(k)
+        out[k] = {"pre": a, "post": b, "delta": (b - a) if a is not None and b is not None else None}
+    return out
+
+
+class RegionsTest:
+    def __init__(self, subject: str, phase: str, trials: list, results_dir: str = RESULTS_DIR) -> None:
+        self.subject = subject
+        self.phase = phase
+        self.trials = trials
+        self.results = []
+        self.trajectory = []   # every cursor sample: (trial, kind, region, t, x, y, cursor_visible)
+
+        self.results_dir = results_dir
         os.makedirs(results_dir, exist_ok=True)
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.base = os.path.join(results_dir, session_name(subject, sequence, results_dir))
+        self.base = os.path.join(results_dir, session_name(subject, f"regions_{phase}", results_dir))
 
         # Session/trial state (times are time.time())
         self.t_start = None
-        self.t_session0 = None
-        self.t_part0 = {}       # {part: first entry into the home of that part}
-        self.t_part_end = {}    # {part: its last goal reached}
-        self.parts_done = set() # parts whose timer has stopped (pause started / session completed)
-        self.t_pause = None     # (start, end) of the pause
-        self.pause_end = None   # while paused: when the pause ends
+        self.t_session0 = None  # first entry into the home: the session timer starts
+        self.t_last = None      # last goal reached: the session timer stops
         self.trial_i = -1
         self.trial = None
         self.t_shown = None   # goal shown: disc (home) / target circle (region)
@@ -329,7 +320,6 @@ class RegionsTest:
     def _next_trial(self, t: float) -> None:
         self.trial_i += 1
         if self.trial_i >= len(self.trials):
-            self.parts_done.add(self.trials[-1]["part"])
             self.end_reason = "completed"
             return
         self.trial = self.trials[self.trial_i]
@@ -340,26 +330,16 @@ class RegionsTest:
     def active(self) -> bool:
         return self.trial is not None and not self.end_reason
 
-    def paused(self) -> bool:
-        return self.pause_end is not None
-
     def cursor_visible(self, t: float) -> bool:
         """The cursor is hidden for the first HIDDEN_S of a region goal."""
         return not (self.active() and self.trial["kind"] == "region" and t - self.t_shown < HIDDEN_S)
 
     def update(self, t: float, x: float, y: float) -> None:
         """One frame with the current (filtered) cursor position in canvas px."""
-        if self.paused():
-            if t < self.pause_end:
-                return   # nothing is recorded during the pause
-            self.t_pause = (self.pause_end - PAUSE_S, self.pause_end)
-            self.pause_end = None
-            print(f"  pause over: part {self.trials[self.trial_i + 1]['part']} starts at the first entry into the home")
-            self._next_trial(t)
         if not self.active():
             return
         tr = self.trial
-        self.trajectory.append((tr["part"], self.trial_i + 1, tr["kind"], tr["region"], t, x, y,
+        self.trajectory.append((self.trial_i + 1, tr["kind"], tr["region"], t, x, y,
                                 int(self.cursor_visible(t))))
         self.samples.append((t, x, y))
 
@@ -368,26 +348,18 @@ class RegionsTest:
             return
         if self.t_enter is None:
             self.t_enter = t
-            if tr["kind"] == "home" and tr["part"] not in self.t_part0:
-                self.t_part0[tr["part"]] = t   # first entry into the home: the part (and session) timer starts
-                if self.t_session0 is None:
-                    self.t_session0 = t
-                print(f"  home entered: part {tr['part']} timer started")
+            if tr["kind"] == "home" and self.t_session0 is None:
+                self.t_session0 = t   # first entry into the home: the session timer starts now
+                print("  home entered: session timer started")
         if t - self.t_enter >= DWELL_S:
             self._end_trial(t)
 
-    def part_time(self, part: int, t: float) -> float:
-        """Time of a part: first entry into its home -> its last goal reached
-        (t while it is still running; 0 before it starts)."""
-        t0 = self.t_part0.get(part)
-        if t0 is None:
-            return 0.0
-        return (self.t_part_end[part] if part in self.parts_done else t) - t0
-
     def elapsed(self, t: float) -> float:
-        """The session timer: the parts only, so it stops when the pause starts
-        and resumes at the first entry into the home after it."""
-        return sum(self.part_time(p, t) for p in self.t_part0)
+        """The session timer: first entry into the home -> last goal reached
+        (t while it is still running; 0 before it starts)."""
+        if self.t_session0 is None:
+            return 0.0
+        return (self.t_last if self.end_reason == "completed" else t) - self.t_session0
 
     def t0(self) -> float:
         """Time origin for the logs: session start if it has begun, else the launch."""
@@ -398,15 +370,9 @@ class RegionsTest:
         r = self.results[-1]
         if self.trial["kind"] == "region":
             hidden = "  (cursor hidden)" if r["reached_hidden"] else ""
-            print(f"  part {r['part']} target {r['part_target_number']}: region {r['region']} "
-                  f"({REGION_NAMES[r['region']]}) reached in {r['reach_time']:.2f}s{hidden}")
-        self.t_part_end[self.trial["part"]] = t
-        if self.trial.get("pause_after"):
-            self.parts_done.add(self.trial["part"])   # its timer stops here, the next one starts in its home
-            self.trial = None
-            self.pause_end = t + PAUSE_S
-            print(f"\n  === PAUSE {PAUSE_S / 60:.0f} min === (nothing recorded)")
-            return
+            print(f"  target {r['target_number']}: region {r['region']} ({REGION_NAMES[r['region']]}) "
+                  f"reached in {r['reach_time']:.2f}s{hidden}")
+        self.t_last = t
         self._next_trial(t)
 
     def _record_trial(self, t: float, success: bool, reason: str) -> None:
@@ -418,8 +384,8 @@ class RegionsTest:
             if tr["kind"] == "region" else {k: None for k in BLIND_KEYS}
         rel = lambda ts: (ts - self.t0()) if ts is not None else None
         self.results.append({
-            "part": tr["part"], "trial": self.trial_i + 1, "kind": tr["kind"], "region": tr["region"],
-            "target_number": tr["target_number"], "part_target_number": tr["part_target_number"],
+            "trial": self.trial_i + 1, "kind": tr["kind"], "region": tr["region"],
+            "target_number": tr["target_number"],
             "goal_x": tr["x"], "goal_y": tr["y"],
             "success": success, "end_reason": reason,
             # Session times (s from the session start): goal shown, entered, trial end
@@ -439,63 +405,39 @@ class RegionsTest:
         targets = [r for r in self.results if r["kind"] == "region"]
         homes = [r for r in self.results if r["kind"] == "home"]
         blocks = block_summaries(targets, BLOCK_SIZE, keys=REGION_KEYS)
-        part_of_target = {tr["target_number"]: tr["part"] for tr in self.trials if tr["kind"] == "region"}
-        for blk in blocks:
-            blk["part"] = part_of_target.get(blk["first_target"])
-
-        def per_region(rows):
-            return {str(reg): summarize([r for r in rows if r["region"] == reg], keys=REGION_KEYS)
-                    for reg in sorted({r["region"] for r in rows})}
-
-        parts = {}
-        for p in range(1, self.n_parts + 1):
-            p_targets = [r for r in targets if r["part"] == p]
-            parts[str(p)] = {
-                "n_targets_total": sum(1 for tr in self.trials if tr["kind"] == "region" and tr["part"] == p),
-                "regions": summarize(p_targets, keys=REGION_KEYS),
-                "homes": summarize([r for r in homes if r["part"] == p]),
-                "per_region": per_region(p_targets),
-            }
         summary = {
-            "subject": self.subject, "sequence": self.sequence, "end_reason": reason,
+            "subject": self.subject, "phase": self.phase, "end_reason": reason,
             "n_trials_total": len(self.trials),
             "n_targets_total": sum(1 for tr in self.trials if tr["kind"] == "region"),
-            # Timer of the session (what is on screen): part 1 + part 2, without the pause
-            # and the wait for the first entry into the home after it
+            # Timer of the session (what is on screen): first entry into the home -> last goal
             "time_total": self.elapsed(t),
-            **{f"time_part_{p}": self.part_time(p, t) for p in range(1, self.n_parts + 1)},
-            # first entry into the home -> end, pause included
-            "wall_clock_duration": (t - self.t_session0) if self.t_session0 is not None else 0.0,
-            "pause": ({"start": self.t_pause[0] - self.t0(), "end": self.t_pause[1] - self.t0(),
-                       "duration": self.t_pause[1] - self.t_pause[0]} if self.t_pause else None),
             "timestamp": self.timestamp,
-            # centre -> target region (what the test measures), both parts
+            # centre -> target region (what the test measures)
             "regions": summarize(targets, keys=REGION_KEYS),
             "homes": summarize(homes),      # region -> back to the centre
-            # Same statistics per part (before / after the pause) ...
-            "parts": parts,
-            # ... and their difference (part 2 - part 1)
-            "part_2_vs_part_1": (compare_parts(parts["1"]["regions"], parts["2"]["regions"])
-                                 if "1" in parts and "2" in parts else None),
-            # ... per region, over its repetitions in both parts
-            "per_region": per_region(targets),
-            # ... and per block of BLOCK_SIZE consecutive targets (learning curve, numbered over the session)
+            # Same statistics per region, over its repetitions
+            "per_region": {str(reg): summarize([r for r in targets if r["region"] == reg], keys=REGION_KEYS)
+                           for reg in sorted({r["region"] for r in targets})},
+            # ...and per block of BLOCK_SIZE consecutive targets (learning curve)
             "block_size": BLOCK_SIZE,
             "n_blocks": len(blocks),
             "blocks": blocks,
-            "missed": [{"part": r["part"], "trial": r["trial"], "kind": r["kind"], "region": r["region"],
-                        "reason": r["end_reason"]}
+            "missed": [{"trial": r["trial"], "kind": r["kind"], "region": r["region"], "reason": r["end_reason"]}
                        for r in self.results if not r["success"]],
             "config": {
                 "canvas": [CANVAS_W, CANVAS_H], "crs_radius": CRS_RADIUS, "home_radius": HOME_RADIUS,
                 "target_radius": TARGET_RADIUS,
-                "region_sequence": [tr["region"] for tr in self.trials if not tr.get("pause_after")
-                                    and tr["part"] == 1],
-                "n_parts": self.n_parts, "pause_s": PAUSE_S,
+                "region_sequence": [tr["region"] for tr in self.trials],
                 "dwell_s": DWELL_S, "hidden_s": HIDDEN_S, "min_visit_s": MIN_VISIT_S,
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }
+        if self.phase == "post":
+            pre_path = latest_summary(f"{self.subject}_regions_pre", self.results_dir)
+            if pre_path:
+                with open(pre_path, encoding="utf-8") as f:
+                    summary["comparison_with_pre"] = {"pre_summary": os.path.basename(pre_path),
+                                                      **compare(json.load(f), summary)}
         if self.results:
             with open(self.base + "_trials.csv", "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=list(self.results[0].keys()))
@@ -509,9 +451,9 @@ class RegionsTest:
         if self.trajectory:
             with open(self.base + "_trajectory.csv", "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["part", "trial", "kind", "region", "t", "x", "y", "cursor_visible"])
-                w.writerows((p, i, k, reg, f"{ts - self.t0():.4f}", f"{x:.2f}", f"{y:.2f}", vis)
-                            for p, i, k, reg, ts, x, y, vis in self.trajectory)
+                w.writerow(["trial", "kind", "region", "t", "x", "y", "cursor_visible"])
+                w.writerows((i, k, reg, f"{ts - self.t0():.4f}", f"{x:.2f}", f"{y:.2f}", vis)
+                            for i, k, reg, ts, x, y, vis in self.trajectory)
         with open(self.base + "_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
@@ -554,19 +496,10 @@ class Screen:
                            BLUE if inside else TARGET, self.px(3))
         if test.cursor_visible(t):
             cv2.circle(img, self.to_screen(crs_x, crs_y), self.px(CRS_RADIUS), CURSOR if hand_detected else GRID, -1)
-        if test.paused():
-            left = max(0.0, test.pause_end - t)
-            text = f"Pause  {int(left // 60)}:{int(left % 60):02d}"
-            size = 1.6 * self.scale
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, size, 3)
-            cv2.putText(img, text, ((self.w - tw) // 2, int(self.oy + 60 * self.scale) + th),
-                        cv2.FONT_HERSHEY_SIMPLEX, size, WHITE, 3)
-        elapsed = test.elapsed(t)   # stopped during the pause, until the home is entered again
+        elapsed = test.elapsed(t)
         tr = test.trial or test.trials[min(max(test.trial_i, 0), len(test.trials) - 1)]
-        n_part = sum(1 for g in test.trials if g["kind"] == "region" and g["part"] == tr["part"])
-        number = min(tr["part_target_number"], n_part)
-        info = (f"part {tr['part']}/{test.n_parts}   target {number}/{n_part}   "
-                f"{int(elapsed // 60)}:{int(elapsed % 60):02d}")
+        n = sum(1 for g in test.trials if g["kind"] == "region")
+        info = f"target {min(tr['target_number'], n)}/{n}   {int(elapsed // 60)}:{int(elapsed % 60):02d}"
         cv2.putText(img, info, (int(20 * self.scale), self.h - int(20 * self.scale)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9 * self.scale, WHITE, 2)
         cv2.imshow(self.window, img)
@@ -579,6 +512,8 @@ def main() -> None:
                         help="Participant id: loads calibrations/<subject>.npz if it exists, else the latest "
                              "calibrations/<subject>_<date>_<time>.npz from customize_bomi.py; also names the "
                              "result files (default: S000)")
+    parser.add_argument("--phase", required=True, choices=("pre", "post"),
+                        help="Training before or after the blind test (a post session is compared with the latest pre)")
     parser.add_argument("--calib", default=None,
                         help="Map to load (calibrations/<NAME>.npz) instead of the participant's own")
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
@@ -614,7 +549,7 @@ def main() -> None:
         sys.exit(1)
     landmarker = bomi.create_hand_landmarker(args.model)
 
-    test = RegionsTest(subject, build_trials(sequence))
+    test = RegionsTest(subject, args.phase, build_trials(sequence))
     bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
     cursor_filter = bomi.CursorFilter()
@@ -622,9 +557,8 @@ def main() -> None:
     sx, sy = CANVAS_W / bomi.BASE_WIDTH, CANVAS_H / bomi.BASE_HEIGHT
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
 
-    print(f"\n=== 9-REGION BLIND REACHING === {test.n_parts} parts x "
-          f"{sum(1 for tr in test.trials if tr['kind'] == 'region' and tr['part'] == 1)} targets, "
-          f"{PAUSE_S / 60:.0f} min pause in between. Q = abort")
+    print(f"\n=== 9-REGION BLIND REACHING, training {args.phase} === "
+          f"{sum(1 for tr in test.trials if tr['kind'] == 'region')} targets. Q = abort")
     test.start(time.time())
     try:
         while not test.end_reason:
@@ -644,24 +578,23 @@ def main() -> None:
         cv2.destroyAllWindows()
         landmarker.close()
 
+    a, h = summary["regions"], summary["homes"]
     fmt = lambda v, u="s": f"{v:.2f}{u}" if v is not None else "-"
-    print(f"\nSession over ({summary['end_reason']}): {summary['regions']['n_success']}/{summary['n_targets_total']} "
-          f"targets reached, time {fmt(summary['time_total'])} (pause excluded; "
-          f"{fmt(summary['wall_clock_duration'])} with it)")
-    for p, part in summary["parts"].items():
-        a, h = part["regions"], part["homes"]
-        print(f"  part {p}: {a['n_success']}/{part['n_targets_total']} targets, time {fmt(summary[f'time_part_{p}'])}")
-        print(f"    centre -> region: mean time {fmt(a['mean_reach_time'])}, norm. path {fmt(a['mean_normalized_path_length'], '')}, "
-              f"reached hidden {fmt(a['mean_reached_hidden'], '%')}, correct at reveal {fmt(a['mean_region_at_reveal_correct'], '%')}, "
-              f"first region correct {fmt(a['mean_first_region_correct'], '%')}, wrong regions {fmt(a['mean_n_wrong_regions'], '')}")
-        print(f"    region -> centre: mean time {fmt(h['mean_reach_time'])}, norm. path {fmt(h['mean_normalized_path_length'], '')}")
-    cmp = summary["part_2_vs_part_1"]
+    print(f"\nSession over ({summary['end_reason']}): {a['n_success']}/{summary['n_targets_total']} "
+          f"targets reached, time {fmt(summary['time_total'])}")
+    print(f"  centre -> region: mean time {fmt(a['mean_reach_time'])}, norm. path {fmt(a['mean_normalized_path_length'], '')}, "
+          f"reached hidden {fmt(a['mean_reached_hidden'], '%')}, correct at reveal {fmt(a['mean_region_at_reveal_correct'], '%')}, "
+          f"first region correct {fmt(a['mean_first_region_correct'], '%')}, wrong regions {fmt(a['mean_n_wrong_regions'], '')}")
+    print(f"  region -> centre: mean time {fmt(h['mean_reach_time'])}, norm. path {fmt(h['mean_normalized_path_length'], '')}")
+    cmp = summary.get("comparison_with_pre")
     if cmp:
-        print("  part 2 - part 1:")
-        for k in ("mean_reach_time", "mean_normalized_path_length", "mean_reached_hidden",
-                  "mean_region_at_reveal_correct", "mean_first_region_correct", "mean_n_wrong_regions"):
-            c = cmp[k]
-            print(f"    {k[5:]:26s} {fmt(c['part_1'], ''):>8s} -> {fmt(c['part_2'], ''):>8s}   delta {fmt(c['delta'], ''):>8s}")
+        print(f"\n  post vs pre ({cmp['pre_summary']}):")
+        for k, c in cmp.items():
+            if k != "pre_summary":
+                print(f"    {k.removeprefix('mean_'):26s} pre {fmt(c['pre'], ''):>8s}   post {fmt(c['post'], ''):>8s}   "
+                      f"delta {fmt(c['delta'], ''):>8s}")
+    elif args.phase == "post":
+        print(f"\n  no pre session of '{subject}' in {RESULTS_DIR}: nothing to compare")
     print(f"  results: {test.base}_trials.csv / _blocks.csv / _trajectory.csv / _summary.json")
 
 

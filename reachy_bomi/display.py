@@ -4,8 +4,11 @@ laptop's built-in one), whatever terminal/monitor they are launched from.
 
 Importing this module is enough (bomi.py and socket_client.py do it): it wraps
 cv2.namedWindow / cv2.imshow so that every new window is moved to that screen
-(centred) the first time it is shown, and gets the keyboard focus. Fullscreen
-windows then fill that screen. Nothing to run here.
+(centred) when it is created and again on its first frame (GNOME opens a new
+window on the monitor in use, e.g. the one of the terminal, and can ignore a
+move made before the window is mapped), and gets the keyboard focus.
+Fullscreen windows then fill that screen (bomi.open_fullscreen_window checks
+it with on_screen()). Nothing to run here.
 
 Screen: $BOMI_SCREEN if set (an xrandr output name, e.g. DP-1, or its prefix),
 else the built-in panel (eDP / LVDS / DSI), else the primary output. If xrandr
@@ -30,6 +33,7 @@ _outputs = None      # [(name, primary, x, y, w, h)] of the connected outputs, f
 _screen = False      # (name, x, y, w, h) once looked up, None if not found
 _monitor = False     # same, for use_monitor() windows
 _placed = set()      # windows already moved to their screen
+_framed = set()      # windows that have shown their first frame
 _on_monitor = set()  # windows that go on the monitor
 
 _named_window = cv2.namedWindow
@@ -109,6 +113,24 @@ def move(window_name: str, x: int, y: int) -> None:
     cv2.moveWindow(window_name, ox + x, oy + y)
 
 
+def target(window_name: str):
+    """(name, x, y, w, h) of the screen window_name belongs on, or None."""
+    return monitor() if window_name in _on_monitor else screen()
+
+
+def on_screen(window_name: str) -> bool:
+    """True if the centre of window_name is on its screen (or it has no known screen)."""
+    s = target(window_name)
+    if s is None:
+        return True
+    try:
+        x, y, w, h = cv2.getWindowImageRect(window_name)
+    except cv2.error:
+        return True
+    _, sx, sy, sw, sh = s
+    return sx <= x + w // 2 < sx + sw and sy <= y + h // 2 < sy + sh
+
+
 def place(window_name: str) -> None:
     """Centre window_name on its screen and (if not on the monitor) give it the
     keyboard focus."""
@@ -123,6 +145,13 @@ def place(window_name: str) -> None:
         ww, wh = 0, 0
     move(window_name, max(0, (w - ww) // 2), max(0, (h - wh) // 2))
     cv2.waitKey(1)
+    for _ in range(10):   # the window manager may apply the move late (or drop it): check and retry
+        if on_screen(window_name):
+            break
+        cv2.waitKey(50)
+        move(window_name, max(0, (w - ww) // 2), max(0, (h - wh) // 2))
+    else:
+        print(f"[display] could not move '{window_name}' to {s[0]}")
     if window_name in _on_monitor:
         return
     try:   # focus (keys are read by the window, not by the terminal); optional
@@ -139,17 +168,21 @@ def _named_window_on_screen(winname, flags=cv2.WINDOW_AUTOSIZE):
 
 def _imshow_on_screen(winname, mat):
     _imshow(winname, mat)
-    if winname not in _placed:
+    if winname not in _framed:
+        _framed.add(winname)
+        cv2.waitKey(1)   # let the window be mapped with its real size, then place it again
         place(winname)
 
 
 def _destroy_window_on_screen(winname):
     _placed.discard(winname)
+    _framed.discard(winname)
     _destroy_window(winname)
 
 
 def _destroy_all_windows_on_screen():
     _placed.clear()
+    _framed.clear()
     _destroy_all_windows()
 
 

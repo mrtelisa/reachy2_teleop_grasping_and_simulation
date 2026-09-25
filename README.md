@@ -9,9 +9,9 @@ The protocol, in order:
 | Step | Script | Where |
 |---|---|---|
 | Map calibration (once) and customization (per participant) | `calibrate_bomi.py`, `customize_bomi.py` (`load_bomi.py` to try a map) | operator PC |
-| Blind test, **pre** training | `reaching_blind.py --phase pre` | operator PC |
-| Training: 96 targets + 3 min pause + 96 targets | `reaching_regions.py` | operator PC |
-| Blind test, **post** training | `reaching_blind.py --phase post` | operator PC |
+| Training **pre**: 96 targets | `reaching_regions.py --phase pre` | operator PC |
+| Blind test (5 per participant, numbered 1-5) | `reaching_blind.py --test N` | operator PC |
+| Training **post**: 96 targets | `reaching_regions.py --phase post` | operator PC |
 | Free exploration: driving Reachy 2 in simulation | `socket_client.py` + the ROS 2 package in the Reachy container | operator PC + container |
 
 ---
@@ -73,7 +73,7 @@ python3 load_bomi.py SUBJECT|NAME [--cam 0] [--model PATH]                      
 ## Training — `reaching_regions.py`
 
 ```bash
-python3 reaching_regions.py --subject S001 [--calib <name>] [--cam 0] [--sequence file.csv]
+python3 reaching_regions.py --subject S001 --phase pre|post [--calib <name>] [--cam 0] [--sequence file.csv]
 ```
 
 The 1200×650 canvas is scaled to the whole screen (the map's 2550×1500 space is scaled onto it) and divided into the 9 regions of the teleoperation interface:
@@ -86,24 +86,24 @@ The 1200×650 canvas is scaled to the whole screen (the map's 2550×1500 space i
 
 The sequence alternates home -> region -> home -> region .... There are **96 targets**, each of the 8 outer regions 12 times, in a seeded random order: every region appears once before any repeat, and never twice in a row. The sequence is frozen in [`config/cursor_regions.csv`](config/cursor_regions.csv), so it is the same for every participant. It is regenerated only if the file is missing (`N_REPETITIONS` in the script).
 
-A session has **two parts**, each the whole sequence (96 targets), with a **3 min pause** in between (`N_PARTS`, `PAUSE_S`): 96 targets -> back to the home -> pause -> 96 targets.
+A session is the whole sequence once (**96 targets**); at the end the window closes and the results are saved. The protocol has two training sessions, `--phase pre` and `--phase post`, with a blind test in between.
 
-How a part runs:
-1. **Home**: the centre circle is shown. The **timer of the part starts the first time the cursor enters it**.
+How a session runs:
+1. **Home**: the centre circle is shown. The **session timer starts the first time the cursor enters it**.
 2. **Region**: as soon as the home is reached, it disappears and the **yellow target circle at the centre of the region** is shown. For the first **1 s** (`HIDDEN_S`) the **cursor is not drawn**. The goal is to see whether the participant can reach the target from the learned map alone, without visual feedback. After that second the cursor reappears.
 3. Every goal, home or target, is reached when the cursor **stays inside its circle for 0.5 s** (`DWELL_S`, the same for both), whether the cursor is hidden or not. Leaving the circle restarts the count. A circle turns blue while the cursor is inside it (a target only once the cursor is visible). The home is then shown again for the return.
-4. After the last target of part 1 and the return to the home, the **pause** starts: no goal, the cursor is visible, the time left is on screen, and nothing is recorded. When it is over the home appears again, and part 2 starts at the first entry into it.
-   The **timer** at the bottom of the screen counts only the parts: it stops when the pause starts and stays still until the cursor enters the home again.
-5. The session ends when the last target of part 2 is reached, or on `Q`/`Esc`.
+4. The session ends when the last target is reached (the timer stops there), or on `Q`/`Esc`.
 
-Results go to `results_regions/`. A subject with previous sessions gets `_1`, `_2`, ... appended to the file names.
+Results go to `results_regions/`. A subject with a previous session of the same phase gets `_1`, `_2`, ... appended to the file names.
 
 | File | Content |
 |---|---|
-| `<subject>_regions_trials.csv` | one row per goal (home or region), with its `part` (1 = before, 2 = after the pause): times and metrics |
-| `<subject>_regions_blocks.csv` | one row per block of 8 targets (one repetition of every region), with its `part`: the learning curve, 12 blocks per part (24 in all) |
-| `<subject>_regions_trajectory.csv` | every cursor sample: part, trial, kind, region, t, x, y, `cursor_visible` (nothing during the pause) |
-| `<subject>_regions_summary.json` | `time_total` (= the on-screen timer), `time_part_1`, `time_part_2` (first entry into the home of the part -> its last goal); means over all region goals and the returns, **per part** (`parts`) and their difference (`part_2_vs_part_1`), per region and per block; the pause times (`pause`, `wall_clock_duration` = with the pause), plus the config |
+| `<subject>_regions_<phase>_trials.csv` | one row per goal (home or region): times and metrics |
+| `<subject>_regions_<phase>_blocks.csv` | one row per block of 8 targets (one repetition of every region): the learning curve, 12 blocks |
+| `<subject>_regions_<phase>_trajectory.csv` | every cursor sample: trial, kind, region, t, x, y, `cursor_visible` |
+| `<subject>_regions_<phase>_summary.json` | `time_total` (= the on-screen timer: first entry into the home -> last goal); means over all region goals and the returns, per region and per block, plus the config |
+
+A **post** session is compared with the subject's latest **pre** session: the differences (post − pre) of the main region metrics are printed and stored under `comparison_with_pre` in the summary.
 
 Metrics for every goal ([`reaching_metrics.py`](reachy_bomi/reaching_metrics.py), in canvas px). For a region goal, the ideal target point is the centre of its target circle.
 
@@ -127,22 +127,29 @@ Metrics for region goals only:
 
 ---
 
-## 3-target blind reaching test (pre / post training)
+## 4-target blind reaching test (5 per participant)
 
 ```bash
-python3 reaching_blind.py --subject S001 --phase pre   # before the training
-python3 reaching_regions.py --subject S001             # training
-python3 reaching_blind.py --subject S001 --phase post  # after the training
+python3 reaching_blind.py --subject S001 --test N   # N = 1..5, the number of the blind test
 ```
 
-During the test the cursor is **never shown**. Only the **current target** is on screen: an empty yellow circle (radius 60 px), shown on its own like the targets of `reaching_regions.py`. Every **4 s** (`TRIAL_S`) it is replaced by the next one, whatever the cursor did. The cursor is still tracked, so the results show whether the participant got there from the learned map alone.
+For example, between the two trainings:
 
-- There are **15 trials**: each of the 3 targets 5 times, all 3 once before any repeat, never twice in a row. Positions (one per third of the screen width, at least 400 px apart and 250 px apart vertically between the highest and the lowest, and **never overlapping a circle of `reaching_regions.py`** — its 8 targets and the home — with at least 20 px between the two, `REGION_CLEARANCE`) and order are drawn at random (seeded) and frozen in [`config/blind_targets.csv`](config/blind_targets.csv) (`trial,target,x,y`), so the pre and post sessions, and every participant, get the same targets.
+```bash
+python3 reaching_regions.py --subject S001 --phase pre
+python3 reaching_blind.py   --subject S001 --test 1
+python3 reaching_regions.py --subject S001 --phase post
+```
+
+During the test the cursor is **never shown**. Only the **current target** is on screen: an empty yellow circle shown on its own, **the same as the training target of its region** (same position, radius 70 px). Every **4 s** (`TRIAL_S`) it is replaced by the next one, whatever the cursor did. The cursor is still tracked, so the results show whether the participant got there from the learned map alone.
+
+- The 4 targets are the training targets of **regions 2, 4, 5 and 9** (top, left, centre/home, bottom-right; `TARGET_REGIONS`), each numbered as its region.
+- There are **12 trials**: each target 3 times (`N_REPETITIONS`), all 4 once before any repeat, never twice in a row. The order is drawn at random (seeded) and frozen in [`config/blind_targets.csv`](config/blind_targets.csv) (`trial,target,x,y`), so the 5 tests, and every participant, get the same sequence. It is regenerated only if the file is missing.
 - Before the start only the cursor is visible (no target), so the participant can see where the hand is. After 2 s (`START_CURSOR_S`), `ENTER` (experimenter) starts the session and the cursor disappears. `Q`/`Esc` aborts it, and the results so far are still saved.
 - The dot in the top-right corner is green while the hand is tracked and grey when tracking is lost. It shows no position.
 - `--show-cursor` draws the cursor. Use it only to test the setup, never with a participant.
 
-Results go to `results_blind/<subject>_blind_<phase>_{trials,blocks,trajectory}.csv` and `_summary.json`. The blocks file has one row per block of 3 trials (each target once). A **post** session is compared with the subject's latest **pre** session: the differences (post − pre) of the main metrics are printed and stored under `comparison_with_pre` in the summary.
+Results go to `results_blind/<subject>_blind_test<N>_{trials,blocks,trajectory}.csv` and `_summary.json` (a repeated test number gets `_1`, `_2`, ... appended). The blocks file has one row per block of 4 trials (each target once). Test N is compared with the subject's latest session of **every earlier test** (1 … N−1): the main metrics of each and the differences (test N − test k) are printed as a table and stored under `comparison_with_previous` in the summary.
 
 Per-trial metrics (canvas px, distances from the target centre). The `reaching_metrics.py` kinematics are also computed, up to the first entry:
 
@@ -192,8 +199,8 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── calibrate_bomi.py       # once: 90 s continuous calibration + offline AE training -> calibrations/shared.npz
 │   ├── customize_bomi.py       # per participant: rotate/flip/scale/offset the shared map -> calibrations/<SUBJECT>_<date>_<time>.npz
 │   ├── load_bomi.py            # try a participant's / any saved map on the fullscreen cursor map
-│   ├── reaching_regions.py     # training: 9-region reaching, 96 targets + pause + 96 targets
-│   ├── reaching_blind.py       # 3-target blind reaching test, pre/post training
+│   ├── reaching_regions.py     # training: 9-region reaching, 96 targets (--phase pre|post)
+│   ├── reaching_blind.py       # 4-target blind reaching test, 5 per participant (--test 1..5)
 │   ├── reaching_metrics.py     # per-trial kinematic metrics
 │   ├── socket_client.py        # free exploration, operator PC: hand -> cursor -> velocities over TCP
 │   ├── socket_server.py        # free exploration, container: TCP -> ROS topics, launches the scenario
@@ -206,7 +213,7 @@ reachy2_teleop_grasping_and_simulation/
 │   └── familiarization.world   # free exploration room
 ├── config/
 │   ├── cursor_regions.csv      # frozen region sequence of the training (96 targets, done twice)
-│   ├── blind_targets.csv       # frozen targets of the pre/post blind test (15 trials)
+│   ├── blind_targets.csv       # frozen sequence of the blind test (12 trials)
 │   └── scenarios.yaml          # free exploration scenarios (world, bag prefix)
 ├── scripts/
 │   ├── hand_landmarker.task    # MediaPipe model (tracked, see Requirements)

@@ -248,6 +248,16 @@ def open_fullscreen_window(window_name: str) -> tuple:
     cv2.waitKey(100)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     cv2.waitKey(300)   # let the window manager apply it before reading the size
+    if not display.on_screen(window_name):
+        # Fullscreen on the wrong screen (e.g. the one of the terminal): back to
+        # a normal window, move it to its screen, fullscreen again
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+        cv2.waitKey(200)
+        display.place(window_name)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.waitKey(300)
+        if not display.on_screen(window_name):
+            print(f"[WARNING] '{window_name}' is not on {display.screen()[0]}: drag it there (Super+Shift+arrow)")
     _, _, w, h = cv2.getWindowImageRect(window_name)
     if cv2.getWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN) != cv2.WINDOW_FULLSCREEN:
         print(f"[WARNING] fullscreen not applied by this OpenCV/desktop, window is {w}x{h}")
