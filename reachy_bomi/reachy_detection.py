@@ -5,6 +5,7 @@ YOLOv8 detection on the torso camera and the depth point-cloud pipeline
 that turns a detected object into a reachy_grasp.ObjectGeometry.
 """
 
+import os
 import time
 from typing import Callable, List, Optional, Tuple
 
@@ -21,7 +22,8 @@ import safety
 
 CAM_WINDOW_NAME = "BoMI - Depth Camera (RGB)"
 
-YOLO_MODEL_PATH = "yolov8n.pt"
+# YOLOv8 weights at the repo root, whatever folder the scripts are run from
+YOLO_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "yolov8n.pt")
 YOLO_CONFIDENCE = 0.5
 
 # Curated subset of COCO classes small/light enough for Reachy's gripper.

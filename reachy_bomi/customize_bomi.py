@@ -4,7 +4,7 @@ Step 2, once per participant (no robot needed): markerlessBoMI's
 "Customization". Loads the shared autoencoder map (calibrations/shared.npz,
 from calibrate_bomi.py), lets you rotate / flip / scale / offset it live on the
 participant's hand and saves it as calibrations/<SUBJECT>_<YYYYMMDD_HHMMSS>.npz
--- reachy_training.py / reachy_control.py, given --subject SUBJECT, load the
+-- reachy_control.py, given --subject SUBJECT, loads the
 latest of those. The shared map is untouched.
 
 Keys: [ / ] rotate, i / o flip X / Y, - / = scale, h j k l offset, r reset,

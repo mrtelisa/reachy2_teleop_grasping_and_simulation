@@ -1,7 +1,7 @@
 """
-Session metrics of a reachy_control.py run (or a reachy_training.py one),
-written to results_robot/<subject>_session.json (_1, _2, ... for later
-sessions; results_training/ for the training). Test = from Control start
+Session metrics of a reachy_control.py run, written to
+results_robot/<subject>_session.json (_1, _2, ... for later sessions).
+Test = from Control start
 (after the cursor preview) to the placement of the carried object. Positions
 come from the mobile base odometry.
 

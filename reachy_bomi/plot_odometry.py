@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
 Plot the path driven in a session from its odometry log
-(<subject>_odometry.csv written by session_metrics.py, in results_robot/ or
-results_training/) to a PNG.
+(<subject>_odometry.csv written by session_metrics.py, in results_robot/)
+to a PNG.
 
-Top-down view in the odometry frame (reset at the start of a training
-session): the robot starts at the origin heading up the page, x = forward,
-y = left. The path is coloured by driving mode (max speed / reduced speed /
+Top-down view in the odometry frame: x = forward, y = left. The path is coloured by driving mode (max speed / reduced speed /
 repositioning / transport), with the start, the end and the heading every few seconds.
 
 Usage:
-    python3 plot_odometry.py results_training/S000_odometry.csv [-o path.png] [--arrows-every 2]
+    python3 plot_odometry.py results_robot/S000_odometry.csv [-o path.png] [--arrows-every 2]
 The PNG is saved next to the csv (<name>_path.png) unless -o is given.
 """
 

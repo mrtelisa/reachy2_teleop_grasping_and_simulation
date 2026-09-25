@@ -20,7 +20,7 @@ webcam → MediaPipe → autoencoder cursor → 9-region velocity → reachy2_sd
       torso depth camera → YOLOv8 → point cloud → grasp planning → arm execution
 ```
 
-`reachy_control.py` is the script with a CLI/`main()` for the real test on the robot (`reachy_training.py` is its navigation-only training run, built from the same modules) — `bomi_teleop.py`, `reachy_detection.py`, `reachy_selection.py`, `reachy_pregrasp.py`, `reachy_grasp.py`, `camera_viewer.py`, `stream.py`, `safety.py`, `graphs.py` and `session_metrics.py` are library modules it's built from; `calibrate_bomi.py` (once) and `customize_bomi.py` (per participant) build the calibration maps on their own, without the robot.
+`reachy_control.py` is the script with a CLI/`main()` for the real test on the robot — `bomi_teleop.py`, `reachy_detection.py`, `reachy_selection.py`, `reachy_pregrasp.py`, `reachy_grasp.py`, `camera_viewer.py`, `stream.py`, `safety.py`, `graphs.py` and `session_metrics.py` are library modules it's built from; `calibrate_bomi.py` (once) and `customize_bomi.py` (per participant) build the calibration maps on their own, without the robot.
 
 - **`bomi_teleop.py`** — hand tracking → autoencoder cursor → 9-region velocity building blocks (continuous calibration phase, cursor preview, the BoMI map with its offline training, cursor filter, velocity helpers). `BoMIMap.fit` trains the autoencoder the way markerlessBoMI's `train_ae` does (80/20 split, VAF and latent-variance report in `BoMIMap.metrics`); `save_map_bomi`/`load_map_bomi` (de)serialize a fitted map to/from a `.npz` file; `resolve_calib_path` / `resolve_samples_path` / `resolve_subject_map_path` turn a map name or participant id into paths inside `CALIB_DIR` (the `calibrations/` folder next to the package; the saved `.npy`/`.npz` files are not tracked by git).
 - **`calibrate_bomi.py`** — standalone tool, run **once**: 90 s continuous calibration saved raw to `calibrations/shared_calib.npy`, offline autoencoder training saved to `calibrations/shared.npz`, then a live preview (nothing sent anywhere, no robot needed). Offers to reuse the raw samples if they are already there (retraining without recording).
@@ -33,7 +33,7 @@ webcam → MediaPipe → autoencoder cursor → 9-region velocity → reachy2_sd
 - **`stream.py`** — blocking camera live feed used by `camera_viewer.py`.
 - **`graphs.py`** — matplotlib diagnostics (point cloud stages, planned grasp), called from `reachy_detection.py`/`reachy_control.py`; every figure is also saved to `graphs/`.
 - **`safety.py`** — quit/shutdown safety net: a local `quit_requested` check (Q/ESC or window closed, while a cv2 window has focus) plus an OS-level global watcher (`pynput`, works regardless of focus, even mid-`arm.goto`) that triggers `emergency_shutdown`.
-- **`session_metrics.py`** — session metrics (durations, path lengths, region shares, dwells, objects moved) and the 20 Hz odometry log, written to `results_robot/` at the end of every `reachy_control.py` run (`results_training/` for `reachy_training.py`).
+- **`session_metrics.py`** — session metrics (durations, path lengths, region shares, dwells, objects moved) and the 20 Hz odometry log, written to `results_robot/` at the end of every `reachy_control.py` run. `plot_odometry.py` draws the path of a session from its odometry csv.
 
 Dependencies between these run one way only, with no cycles: `reachy_grasp.py`/`bomi_teleop.py` have no dependency on the rest, `reachy_detection.py` depends only on `reachy_grasp.py` (for the shared `ObjectGeometry` type), `reachy_selection.py` depends on both, and `reachy_control.py` ties everything together.
 
@@ -56,7 +56,7 @@ curl -o hand_landmarker.task \
   https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
 ```
 
-`reachy_control.py` uses YOLOv8 (`ultralytics`) for object detection — `yolov8n.pt` (COCO-pretrained) is auto-downloaded on first run, or pass `--yolo-model` to use different weights.
+`reachy_control.py` uses YOLOv8 (`ultralytics`) for object detection — `yolov8n.pt` (COCO-pretrained) is tracked at the repo root (the default for `--yolo-model`, whatever folder you run from), or pass `--yolo-model` to use different weights.
 
 No ROS 2 install is required to run these scripts (they only talk to the robot via `reachy2_sdk`). The package is still packaged as an `ament_python` ROS 2 package for convenience if you keep it in a ROS 2 workspace, but nothing in the runtime code imports `rclpy`.
 
@@ -136,18 +136,6 @@ The automatic back-up/rotation at the end is not part of any path length.
 
 Next to the JSON, every session also writes `<subject>_odometry.csv` (`odometry_file` in the JSON): the raw mobile base odometry sampled at the control-loop rate (`PUBLISH_HZ` = 20 Hz) while driving — `t` (unix time), `t_test` (s since the test start), `x`, `y` [m], `theta` [rad], `vx`, `vy` [m/s], `vtheta` [rad/s] and the driving `mode` (`max_speed` / `reduced_speed` / `repositioning`) — so any other trajectory parameter can be computed afterwards.
 
-### Navigation training — `reachy_training.py`
-
-A training run for the test above, with the same interface and parameters but nothing beyond driving: no arms, no object selection, no grasp.
-
-```bash
-python3 reachy_bomi/reachy_training.py [robot_ip] [--cam 0] [--model hand_landmarker.task] [--calib NAME] [--subject ID]
-```
-
-Same startup as `reachy_control.py` (the participant's map or `--calib`, default posture, lidar distances, head looking down), then the **mobile base odometry is reset** so every session's trajectory starts from `x = y = θ = 0`. Cursor preview with the head camera streaming; holding the cursor in region 5 for 3 s (`SELECTION_HOLD_SECONDS`, as in the test) starts driving at the normal speed (`MAX_LINEAR` / `MAX_ANGULAR`, the test's Control before the pre-grasp pose). While driving, a 10 s dwell in region 5 (`MODE_SWITCH_HOLD_SECONDS`, the test's Control dwell) opens the same Yes/No dialog as the test ("Do you want to end the training?"): **Yes** ends the training, **No** goes back to driving through a cursor preview. `Q`/`Esc` quit; the robot is stopped and powered off in every case, without the back-up/rotation (it never sits at the table).
-
-The same [session metrics](#session-metrics) and odometry CSV are written to `results_training/<subject>_session.json` and `results_training/<subject>_odometry.csv` (the fields about object selection/grasp stay empty: `reached_object_selection` false, no objects, no repositioning; all the path is `path_length_max_speed`; `n_dwell_declined` counts the "No" answers to the end dialog).
-
 ### Calibration maps — `calibrate_bomi.py` (once), `customize_bomi.py` (per participant)
 
 The same procedure markerlessBoMI was used with: **one** autoencoder map, trained once on a single 90 s recording of the experimenter's hand, and for each participant only the customization (rotation / gain / offset). Neither tool needs a robot connection — just the webcam and MediaPipe model, so they run on the operator PC on their own, before the sessions.
@@ -161,7 +149,7 @@ python3 reachy_bomi/customize_bomi.py [SUBJECT] [--base shared] [--cam 0] [--mod
 1. *Continuous calibration*: after `SPACE`, the hand is recorded continuously for `CALIB_DURATION_S` = 90 s (every frame with a tracked hand, no sample picking by hand: keep moving the hand through the whole workspace while the time remaining is shown), then the raw 42-feature samples are saved to `calibrations/shared_calib.npy`. If that file already exists the tool offers to reuse it and skip the recording (`--recalibrate` forces a new one) — that's how to retrain after changing the AE hyperparameters in `bomi_teleop.py`.
 2. *Offline training*: the autoencoder (32-32-2-32-32, tanh, Adam 0.02, 3001 full-batch epochs) is trained on the saved samples the way markerlessBoMI's `train_ae` does — all-zero rows dropped, shuffle, 80/20 train/test split, screen scale/offset from the training latent codes — and the VAF and latent-variance share of each code unit on train and test are printed (and stored in the `.npz`, shown again at the start of the robot scripts). Takes a couple of minutes on CPU. The map is saved to `calibrations/shared.npz` and previewed live (`Q` quits). A `NAME` other than `shared` saves under that name (then `customize_bomi.py --base NAME`).
 
-**Per participant — `customize_bomi.py SUBJECT`** (markerlessBoMI's "Customization"): loads `calibrations/shared.npz` and shows the live cursor map on the participant's hand; rotate/flip/scale/offset it (`[ ]`, `i`/`o`, `-`/`=`, `hjkl`, `r` resets) until the whole 3×3 grid is comfortably reachable and the rest position sits in region 5, then `S` asks the participant id (`SUBJECT` from the command line is the default, `-` cancels) and saves it as `calibrations/<id>_<YYYYMMDD_HHMMSS>.npz` — type `elisa`, get `elisa_20260916_155827.npz`. `reachy_training.py`/`reachy_control.py --subject elisa` load the **latest** of those, so a redone customization simply wins and the older ones stay on disk. The AE input being MediaPipe's normalized landmark coordinates, one hand's map transfers to another up to this affine customization (hand size/position → gain/offset, orientation → rotation). Retraining the shared map invalidates the existing customized maps (they were made on the old one) — `calibrate_bomi.py` warns about it.
+**Per participant — `customize_bomi.py SUBJECT`** (markerlessBoMI's "Customization"): loads `calibrations/shared.npz` and shows the live cursor map on the participant's hand; rotate/flip/scale/offset it (`[ ]`, `i`/`o`, `-`/`=`, `hjkl`, `r` resets) until the whole 3×3 grid is comfortably reachable and the rest position sits in region 5, then `S` asks the participant id (`SUBJECT` from the command line is the default, `-` cancels) and saves it as `calibrations/<id>_<YYYYMMDD_HHMMSS>.npz` — type `elisa`, get `elisa_20260916_155827.npz`. `reachy_control.py --subject elisa` loads the **latest** of those, so a redone customization simply wins and the older ones stay on disk. The AE input being MediaPipe's normalized landmark coordinates, one hand's map transfers to another up to this affine customization (hand size/position → gain/offset, orientation → rotation). Retraining the shared map invalidates the existing customized maps (they were made on the old one) — `calibrate_bomi.py` warns about it.
 
 ---
 
@@ -173,8 +161,8 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── __init__.py
 │   ├── reachy_control.py            # THE entry point: ties bomi_teleop/reachy_detection/reachy_selection/reachy_pregrasp/reachy_grasp together under one BoMI cursor
 │   ├── bomi_teleop.py               # library: webcam/MediaPipe → autoencoder cursor → 9-region velocity building blocks, BoMIMap save/load/customize
-│   ├── reachy_training.py           # navigation training for the test: same preview/driving as reachy_control.py, no arms/grasp, odometry reset at start
-│   ├── session_metrics.py           # library: session metrics (durations, path lengths, region shares, dwells) + 20 Hz odometry csv, written to results_robot/ (results_training/ for the training)
+│   ├── session_metrics.py           # library: session metrics (durations, path lengths, region shares, dwells) + 20 Hz odometry csv, written to results_robot/
+│   ├── plot_odometry.py             # standalone script: top-down PNG of the path driven in a session, from its odometry csv
 │   ├── calibrate_bomi.py            # standalone script, once: 90 s continuous calibration, offline AE training -> calibrations/shared.npz, live preview -- no robot needed
 │   ├── customize_bomi.py            # standalone script, per participant: rotate/flip/scale/offset the shared map live -> calibrations/<SUBJECT>_<date>_<time>.npz -- no robot needed
 │   ├── reachy_detection.py          # library: torso camera → YOLOv8 → point cloud → grasp geometry building blocks
@@ -185,12 +173,11 @@ reachy2_teleop_grasping_and_simulation/
 │   ├── stream.py                    # library: camera-streaming primitives (torso + teleop cameras)
 │   ├── display.py                   # library: puts every window (cv2 + matplotlib) on the laptop screen
 │   ├── graphs.py                    # library: matplotlib diagnostics (point cloud stages, grasp plan), figures saved to graphs/
-│   ├── safety.py                    # library: quit/shutdown safety net (local check + OS-level global watcher)
-│   └── yolov8n.pt                   # YOLOv8 weights (auto-downloaded by ultralytics on first run)
+│   └── safety.py                    # library: quit/shutdown safety net (local check + OS-level global watcher)
 ├── calibrations/                     # shared_calib.npy (raw samples), shared.npz (the AE map), <SUBJECT>_<date>_<time>.npz (per participant); folder tracked via .gitkeep, the files are not
 ├── results_robot/                    # session metrics JSON + odometry CSV of reachy_control.py (created on first run, not tracked by git)
-├── results_training/                 # the same for reachy_training.py (created on first run, not tracked by git)
 ├── hand_landmarker.task              # MediaPipe model (tracked, see Requirements)
+├── yolov8n.pt                        # YOLOv8 weights (tracked; ultralytics re-downloads them if missing)
 ├── resource/
 │   └── reachy_bomi                  # ament resource marker
 ├── package.xml
