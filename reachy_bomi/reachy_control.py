@@ -6,7 +6,7 @@ BoMI teleop + grasp for Reachy2: the entry point. One hand-tracked cursor
 
 Usage:
     python3 reachy_control.py [robot_ip] [--cam 0] [--model PATH] [--yolo-model PATH]
-                              [--conf 0.5] [--calib NAME] [--subject ID]
+                              [--conf 0.5] [--calib NAME] [--subject ID] --run 1|2
 
 Phases:
   1. Load the participant's map (customize_bomi.py, run beforehand without the
@@ -718,12 +718,14 @@ def main() -> None:
                         help="Participant id: loads calibrations/<subject>.npz if it exists, else the latest "
                              "calibrations/<subject>_<date>_<time>.npz from customize_bomi.py; also names the "
                              "session metrics files in results_robot/ (default: S000)")
+    parser.add_argument("--run", required=True, type=int, choices=(1, 2),
+                        help="Run of the participant (2 per participant): results_robot/<subject>_run<N>_*")
     cli_args = parser.parse_args()
     cli_args.subject = bomi_teleop.strip_npz(cli_args.subject)  # "elisa.npz" -> "elisa" in the metrics file names
 
     global _metrics
     # optimal path length for normalized_path_length: session_metrics.DEFAULT_OPTIMAL_PATH_LENGTH
-    _metrics = session_metrics.SessionMetrics(cli_args.subject, dwell_seconds=MODE_SWITCH_HOLD_SECONDS)
+    _metrics = session_metrics.SessionMetrics(cli_args.subject, cli_args.run, dwell_seconds=MODE_SWITCH_HOLD_SECONDS)
 
     if not os.path.exists(cli_args.model):
         print(f"[ERROR] MediaPipe model not found: '{cli_args.model}'")

@@ -89,10 +89,10 @@ The real entry point — everything else in the package exists to support this.
 ```bash
 python3 reachy_bomi/reachy_control.py [robot_ip] [--cam 0] [--model hand_landmarker.task] [--yolo-model yolov8n.pt] [--conf 0.5] [--calib NAME] [--subject ID]
 # or, from a built ROS 2 workspace:
-ros2 run reachy_bomi reachy_control [robot_ip] [--cam 0] [--model hand_landmarker.task] [--yolo-model yolov8n.pt] [--conf 0.5] [--calib NAME] [--subject ID]
+ros2 run reachy_bomi reachy_control [robot_ip] [--cam 0] [--model hand_landmarker.task] [--yolo-model yolov8n.pt] [--conf 0.5] [--calib NAME] [--subject ID] --run 1|2
 ```
 
-`robot_ip` is optional if you've set `DEFAULT_ROBOT_IP` in `reachy_control.py` to your robot's IP; otherwise pass it explicitly. `--subject` names the session metrics file (see [Session metrics](#session-metrics)).
+`robot_ip` is optional if you've set `DEFAULT_ROBOT_IP` in `reachy_control.py` to your robot's IP; otherwise pass it explicitly. `--subject` and `--run` (1 or 2: every participant does two runs) name the session metrics files (see [Session metrics](#session-metrics)).
 
 **Phase 1 — Map loading:** no calibration happens on the robot. The participant's map `calibrations/<subject>_<date>_<time>.npz` is made beforehand with `customize_bomi.py SUBJECT` (see [Calibration maps](#calibration-maps--calibrate_bomipy-once-customize_bomipy-per-participant)) and picked up from `--subject` (the latest one for that id; if `calibrations/<subject>.npz` itself exists, e.g. `--subject shared` or a full map name with or without `.npz`, that exact file is loaded instead); `--calib NAME` loads any other saved map. A missing map fails fast, before connecting to the robot, listing the maps actually found.
 
@@ -117,7 +117,7 @@ ESC/Q stop the robot from *any* window or the terminal, at any point — see `sa
 
 ### Session metrics
 
-Every run of `reachy_control.py` writes `results_robot/<subject>_session.json` (`<subject>_1`, `_2`, ... for later sessions of the same subject; `--subject`, default `S000`), collected by [`session_metrics.py`](reachy_bomi/session_metrics.py) from the mobile base odometry and the pipeline events. Written in `main()`'s `finally`, so it exists even after a quit or an abort (`end_reason`: `finished` / `quit` / `aborted: ...`).
+Every run of `reachy_control.py` writes `results_robot/<subject>_run<N>_session.json` (`--subject`, default `S000`; `--run` N = 1 or 2; a repeated run gets `_1`, `_2`, ... appended, e.g. `S001_run1_1`), collected by [`session_metrics.py`](reachy_bomi/session_metrics.py) from the mobile base odometry and the pipeline events. Written in `main()`'s `finally`, so it exists even after a quit or an abort (`end_reason`: `finished` / `quit` / `aborted: ...`).
 
 | Field | Meaning |
 |---|---|
@@ -134,7 +134,7 @@ Every run of `reachy_control.py` writes `results_robot/<subject>_session.json` (
 
 The automatic back-up/rotation at the end is not part of any path length.
 
-Next to the JSON, every session also writes `<subject>_odometry.csv` (`odometry_file` in the JSON): the raw mobile base odometry sampled at the control-loop rate (`PUBLISH_HZ` = 20 Hz) while driving — `t` (unix time), `t_test` (s since the test start), `x`, `y` [m], `theta` [rad], `vx`, `vy` [m/s], `vtheta` [rad/s] and the driving `mode` (`max_speed` / `reduced_speed` / `repositioning`) — so any other trajectory parameter can be computed afterwards.
+Next to the JSON, every session also writes `<subject>_run<N>_odometry.csv` (`odometry_file` in the JSON): the raw mobile base odometry sampled at the control-loop rate (`PUBLISH_HZ` = 20 Hz) while driving — `t` (unix time), `t_test` (s since the test start), `x`, `y` [m], `theta` [rad], `vx`, `vy` [m/s], `vtheta` [rad/s] and the driving `mode` (`max_speed` / `reduced_speed` / `repositioning`) — so any other trajectory parameter can be computed afterwards.
 
 ### Calibration maps — `calibrate_bomi.py` (once), `customize_bomi.py` (per participant)
 

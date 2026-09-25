@@ -1,6 +1,7 @@
 """
 Session metrics of a reachy_control.py run, written to
-results_robot/<subject>_session.json (_1, _2, ... for later sessions).
+results_robot/<subject>_run<N>_session.json (N = --run, 1 or 2; a repeated run
+number gets _1, _2, ... appended).
 Test = from Control start
 (after the cursor preview) to the placement of the carried object. Positions
 come from the mobile base odometry.
@@ -15,7 +16,7 @@ come from the mobile base odometry.
   n_dwell, n_dwell_declined            dwells while driving, and those answered "No"
 
 Every odometry sample taken while driving (control-loop rate, PUBLISH_HZ =
-20 Hz) is also written as is to <subject>_odometry.csv next to the json:
+20 Hz) is also written as is to <subject>_run<N>_odometry.csv next to the json:
 t (unix), t_test (s since test start), x, y [m], theta [rad], vx, vy [m/s],
 vtheta [rad/s], mode (max_speed / reduced_speed / repositioning / transport).
 """
@@ -77,23 +78,26 @@ def log_dimensionless_jerk(samples) -> float:
     return -math.log(dj) if dj > 0 else None
 
 
-def _session_name(subject: str, results_dir: str) -> str:
-    """<subject> for the first session, then <subject>_1, <subject>_2, ..."""
-    existing = [f for f in os.listdir(results_dir) if f.startswith(subject + "_") or f == f"{subject}_session.json"]
-    if not existing:
-        return subject
-    used = {int(m.group(1)) for f in existing for m in [re.match(rf"{re.escape(subject)}_(\d+)_session\.json$", f)] if m}
-    return f"{subject}_{max(used, default=0) + 1}"
+def _session_name(subject: str, run: int, results_dir: str) -> str:
+    """<subject>_run<run> for the first session of that run, then
+    <subject>_run<run>_1, _2, ... if it is repeated."""
+    prefix = f"{subject}_run{run}"
+    if not os.path.exists(os.path.join(results_dir, prefix + "_session.json")):
+        return prefix
+    used = {int(m.group(1)) for f in os.listdir(results_dir)
+            for m in [re.match(rf"{re.escape(prefix)}_(\d+)_session\.json$", f)] if m}
+    return f"{prefix}_{max(used, default=0) + 1}"
 
 
 class SessionMetrics:
-    def __init__(self, subject: str, optimal_path_m: float = DEFAULT_OPTIMAL_PATH_LENGTH,
+    def __init__(self, subject: str, run: int, optimal_path_m: float = DEFAULT_OPTIMAL_PATH_LENGTH,
                  dwell_seconds: float = 0.0, results_dir: str = RESULTS_DIR) -> None:
         self.subject = subject
+        self.run = run
         self.optimal_path_m = optimal_path_m
         self.dwell_seconds = dwell_seconds   # default duration of a dwell (dwell() can override it)
         os.makedirs(results_dir, exist_ok=True)
-        base = os.path.join(results_dir, _session_name(subject, results_dir))
+        base = os.path.join(results_dir, _session_name(subject, run, results_dir))
         self.path_json = base + "_session.json"
         self.path_odometry_csv = base + "_odometry.csv"
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -202,6 +206,7 @@ class SessionMetrics:
         region_secs, region_pct, dwell_removed = self.region_shares()
         return {
             "subject": self.subject,
+            "run": self.run,
             "timestamp": self.timestamp,
             "end_reason": self.end_reason,
             "test_duration": (t_end - self.t_test_start) if self.t_test_start else None,

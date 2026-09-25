@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Plot the path driven in a session from its odometry log
-(<subject>_odometry.csv written by session_metrics.py, in results_robot/)
+(<subject>_run<N>_odometry.csv written by session_metrics.py, in results_robot/)
 to a PNG.
 
 Top-down view in the odometry frame: x = forward, y = left. The path is coloured by driving mode (max speed / reduced speed /
 repositioning / transport), with the start, the end and the heading every few seconds.
 
 Usage:
-    python3 plot_odometry.py results_robot/S000_odometry.csv [-o path.png] [--arrows-every 2]
+    python3 plot_odometry.py results_robot/S000_run1_odometry.csv [-o path.png] [--arrows-every 2]
 The PNG is saved next to the csv (<name>_path.png) unless -o is given.
 """
 
@@ -45,7 +45,7 @@ def load_odometry(path: str) -> dict:
 
 
 def session_summary(csv_path: str) -> dict:
-    """The <subject>_session.json next to the csv, {} if missing."""
+    """The <subject>_run<N>_session.json next to the csv, {} if missing."""
     json_path = csv_path[:-len("_odometry.csv")] + "_session.json" if csv_path.endswith("_odometry.csv") else None
     if json_path and os.path.exists(json_path):
         with open(json_path, encoding="utf-8") as f:
@@ -121,7 +121,7 @@ def plot_path(odom: dict, summary: dict, out_png: str, arrows_every_s: float) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("csv", help="<subject>_odometry.csv of the session")
+    parser.add_argument("csv", help="<subject>_run<N>_odometry.csv of the session")
     parser.add_argument("-o", "--out", default=None, help="Output PNG (default: <csv name>_path.png next to it)")
     parser.add_argument("--arrows-every", type=float, default=2.0,
                         help="Seconds between heading arrows (default: 2, 0 = none)")
