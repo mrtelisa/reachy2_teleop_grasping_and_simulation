@@ -65,8 +65,8 @@ import session_metrics
 
 DEFAULT_ROBOT_IP = "10.186.13.12"
 
-SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds, Repositioning -> object selection
-MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # Control dwells: -> pre-grasp pose, -> object selection
+SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds
+MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # driving dwells: -> pre-grasp pose, -> object selection, -> placement grid, Repositioning -> back
 
 HALVED_SPEED_FACTOR = 0.75   # velocity multiplier once the arms are in the pre-grasp pose
 
@@ -665,12 +665,12 @@ def repositioning_navigation(cap, landmarker, bomi_map, cursor_filter, crs_x, cr
     MIN_LINEAR/MIN_ANGULAR and the torso/depth camera streaming, so the user
     can adjust the base in front of the objects (or the placement table).
     Starts with a cursor preview; returns (crs_x, crs_y, quit_now) once the
-    cursor has been held centred for SELECTION_HOLD_SECONDS (back to the
+    cursor has been held centred for MODE_SWITCH_HOLD_SECONDS (back to the
     caller's screen, on a fresh capture)."""
     map_window = bomi_teleop.MAP_WINDOW_NAME
 
     print("\n=== REPOSITIONING ===  Q = quit  |  hold the cursor centered (region 5) "
-          f"for {SELECTION_HOLD_SECONDS:.0f}s to go back to the selection")
+          f"for {MODE_SWITCH_HOLD_SECONDS:.0f}s to go back to the selection")
     # Torso stream and map over the selection window
     cv2.setWindowProperty(reachy_detection.CAM_WINDOW_NAME, cv2.WND_PROP_TOPMOST, 0)
     bring_window_to_front(map_window, bomi_teleop.MAP_WINDOW_POS)  # re-positions it, since it was destroyed on the last exit
@@ -685,10 +685,10 @@ def repositioning_navigation(cap, landmarker, bomi_map, cursor_filter, crs_x, cr
         crs_x, crs_y, quit_now = _drive_until_center_dwell(
             cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y, mobile_base,
             max_linear=bomi_teleop.MIN_LINEAR, max_angular=bomi_teleop.MIN_ANGULAR,
-            hold_seconds=SELECTION_HOLD_SECONDS, odometry_mode=session_metrics.MODE_REPOSITIONING,
+            hold_seconds=MODE_SWITCH_HOLD_SECONDS, odometry_mode=session_metrics.MODE_REPOSITIONING,
         )
         if not quit_now and _metrics is not None:
-            _metrics.dwell(True, seconds=SELECTION_HOLD_SECONDS)   # back to the selection (3 s, not the 10 s Control dwell)
+            _metrics.dwell(True)   # back to the selection
         safety.destroy_window(map_window)
         return crs_x, crs_y, quit_now
     finally:

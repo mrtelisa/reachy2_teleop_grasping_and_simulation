@@ -13,3 +13,4 @@ results_robot/
 results_blind/
 reachy_bomi/webcam_mediapipe.py
 results_regions/
+commands_protocol.txt

@@ -142,8 +142,7 @@ class SessionMetrics:
         """A dwell in region 5 completed while driving. accepted: True = it
         changed state (pre-grasp pose / object selection / back to selection),
         False = the user answered No and kept driving, None = quit.
-        seconds: how long that dwell was (default: dwell_seconds), since the
-        Control dwells (10 s) and the repositioning one (3 s) differ."""
+        seconds: how long that dwell was (default: dwell_seconds)."""
         self.n_dwell += 1
         self.dwell_time += self.dwell_seconds if seconds is None else seconds
         if accepted is False:
