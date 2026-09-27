@@ -13,6 +13,12 @@ Metrics (None where not computable):
   log_dimensionless_jerk  -ln(dimensionless_jerk)
   n_speed_peaks      local maxima of the (smoothed) speed profile above peak_threshold
   mean_speed, peak_speed
+  initial_direction_error   [deg, 0..180] angle between the initial movement
+                     direction (onset -> position INITIAL_DIRECTION_S after the
+                     onset) and the direction onset -> target centre: the
+                     feedforward aiming error, before any correction
+  initial_direction_error_peak   the same, with the initial direction taken
+                     onset -> position at the first speed peak
 
 summarize() averages them over a whole session, block_summaries() over each
 block of N consecutive targets (learning curve).
@@ -29,7 +35,20 @@ METRIC_KEYS = (
     "path_length", "straight_distance", "normalized_path_length",
     "max_deviation", "dimensionless_jerk", "log_dimensionless_jerk",
     "n_speed_peaks", "mean_speed", "peak_speed",
+    "initial_direction_error", "initial_direction_error_peak",
 )
+
+INITIAL_DIRECTION_S = 0.2   # initial_direction_error: direction onset -> position this long after the onset
+
+
+def direction_error(p0, p1, goal):
+    """Angle [deg, 0..180] between p0 -> p1 and p0 -> goal (None if either is degenerate)."""
+    a = np.asarray(p1, dtype=float) - np.asarray(p0, dtype=float)
+    b = np.asarray(goal, dtype=float) - np.asarray(p0, dtype=float)
+    na, nb = float(np.hypot(*a)), float(np.hypot(*b))
+    if na < 1e-6 or nb < 1e-6:
+        return None
+    return math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(a, b)) / (na * nb)))))
 
 
 def compute_trial_metrics(samples, goal, t_shown, t_reach, onset_speed, peak_threshold, resample_hz):
@@ -62,6 +81,11 @@ def compute_trial_metrics(samples, goal, t_shown, t_reach, onset_speed, peak_thr
     i_onset = int(moving[0])
     t_onset = float(t[i_onset])
     m["reaction_time"] = t_onset - t_shown
+    # Aiming error: direction of the first INITIAL_DIRECTION_S of the movement vs the target
+    p_onset = (x[i_onset], y[i_onset])
+    t_dir = t_onset + INITIAL_DIRECTION_S
+    if t_dir <= t[-1]:
+        m["initial_direction_error"] = direction_error(p_onset, (np.interp(t_dir, t, x), np.interp(t_dir, t, y)), goal)
 
     t_end = t_reach if t_reach is not None else float(t[-1])
     i_end = int(np.searchsorted(t, t_end, side="right"))
@@ -118,6 +142,8 @@ def compute_trial_metrics(samples, goal, t_shown, t_reach, onset_speed, peak_thr
     su_s = np.convolve(su, np.ones(k) / k, mode="same")
     peaks, _ = find_peaks(su_s, height=peak_threshold, prominence=peak_threshold * 0.25)
     m["n_speed_peaks"] = int(peaks.size)
+    if peaks.size:
+        m["initial_direction_error_peak"] = direction_error(p_onset, (xu[peaks[0]], yu[peaks[0]]), goal)
     return m
 
 

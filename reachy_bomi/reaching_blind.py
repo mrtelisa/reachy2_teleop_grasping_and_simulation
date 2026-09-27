@@ -32,8 +32,10 @@ on the experimenter's monitor (never to the participant).
 
 Metrics of every trial (window = the TRIAL_S the target is yellow; distances
 in canvas px from the target centre):
-  hit                 100 if the cursor entered the target circle, else 0
-  reach_time          target shown -> first entry into the circle (hits only)
+  hit                 100 if the cursor stayed inside the target circle for DWELL_S
+                      (0.5 s, as in reaching_regions.py) without leaving it, else 0:
+                      crossing the circle by chance is not a hit
+  reach_time          target shown -> the entry that completed that stay (hits only)
   time_in_target      % of the window the cursor was inside the circle
   on_target_at_end    100 if the cursor is inside the circle when the target changes
   initial_error       distance when the target is shown (start of the reach)
@@ -45,9 +47,16 @@ in canvas px from the target centre):
                       target changes (all 4 count, even if only the current
                       one is on screen), and 100 if it is the current one
   hand_lost           % of the window without a tracked hand
+  region_at_end, region_at_end_correct   region (1..9 of the 3 x 3 grid) of the
+                      cursor when the target changes, and 100 if it is the
+                      target's region: the command the robot would have got
+  end_time_in_region  % of the last END_WINDOW_S spent in the target's region
+  time_in_region      % of the window spent in the target's region
+  region_hit, region_reach_time   100 if the cursor stayed in the target's
+                      region for DWELL_S, and the time to the entry of that stay
 and the reaching_metrics.py kinematics (reaction_time, normalized_path_length,
-dimensionless_jerk, n_speed_peaks, ...) from the start of the window to the
-first entry (hits) or to its end (misses). "success" in the files means the
+initial_direction_error, dimensionless_jerk, n_speed_peaks, ...) from the start of the window to the
+entry of the hit (hits) or to its end (misses). "success" in the files means the
 trial ran its full TRIAL_S (False only for the trial cut by an abort): the
 means are over the completed trials.
 
@@ -81,7 +90,7 @@ import numpy as np
 import bomi
 from reaching_metrics import METRIC_KEYS, block_summaries, compute_trial_metrics, summarize
 import reaching_regions
-from reaching_regions import CANVAS_H, CANVAS_W, latest_summary, session_name
+from reaching_regions import CANVAS_H, CANVAS_W, DWELL_S, latest_summary, region_of, session_name
 
 # --- Targets: the reaching_regions.py targets of these regions (same canvas, position and radius) ---
 TARGET_REGIONS = (2, 4, 5, 9)
@@ -105,12 +114,14 @@ MOTION_ONSET_SPEED = 40.0     # [px/s]
 SPEED_PEAK_THRESHOLD = 80.0   # [px/s]
 RESAMPLE_HZ = 50.0
 BLIND_KEYS = ("hit", "time_in_target", "on_target_at_end", "initial_error", "final_error", "end_error",
-              "min_error", "relative_final_error", "chosen_target", "chosen_correct", "hand_lost")
-# Averaged in the summary (target numbers are not)
-TRIAL_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k != "chosen_target")
-# Printed at the end and compared with the earlier tests
-MAIN_KEYS = ("hit", "chosen_correct", "final_error", "end_error", "relative_final_error",
-             "time_in_target", "reach_time", "normalized_path_length")
+              "min_error", "relative_final_error", "chosen_target", "chosen_correct", "hand_lost",
+              "region_at_end", "region_at_end_correct", "end_time_in_region", "time_in_region",
+              "region_hit", "region_reach_time")
+# Averaged in the summary (target and region numbers are not)
+TRIAL_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k not in ("chosen_target", "region_at_end"))
+# Printed at the end and compared with the earlier tests: the main metrics of the analysis first
+MAIN_KEYS = ("hit", "end_error", "reach_time", "initial_direction_error", "region_at_end_correct",
+             "chosen_correct", "final_error", "relative_final_error", "time_in_target", "normalized_path_length")
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_blind")
 WINDOW = "BoMI - Blind reaching"
@@ -172,9 +183,11 @@ def target_positions(trials: list) -> dict:
     return {tr["target"]: (tr["x"], tr["y"]) for tr in trials}
 
 
-def blind_metrics(samples: list, hand: list, goal: tuple, positions: dict, target: int) -> dict:
+def blind_metrics(samples: list, hand: list, goal: tuple, positions: dict, target: int, t_shown: float,
+                  t_enter: float) -> dict:
     """End-point / accuracy metrics of one trial (see the module docstring).
-    samples: (t, x, y) of the whole window, hand: hand_detected per sample."""
+    samples: (t, x, y) of the whole window, hand: hand_detected per sample,
+    t_enter: entry of the first DWELL_S stay in the circle (None = no hit)."""
     m = {k: None for k in BLIND_KEYS}
     if not samples:
         return m
@@ -182,7 +195,7 @@ def blind_metrics(samples: list, hand: list, goal: tuple, positions: dict, targe
     t = arr[:, 0]
     d = np.hypot(arr[:, 1] - goal[0], arr[:, 2] - goal[1])
     inside = d < TARGET_RADIUS
-    m["hit"] = 100.0 if inside.any() else 0.0
+    m["hit"] = 100.0 if t_enter is not None else 0.0
     # Time-weighted fractions: each sample holds until the next one
     dt = np.diff(t, append=t[-1])
     total = float(np.sum(dt))
@@ -199,6 +212,24 @@ def blind_metrics(samples: list, hand: list, goal: tuple, positions: dict, targe
     x, y = arr[-1, 1], arr[-1, 2]
     m["chosen_target"] = min(positions, key=lambda k: math.hypot(x - positions[k][0], y - positions[k][1]))
     m["chosen_correct"] = 100.0 if m["chosen_target"] == target else 0.0
+    # Region-level accuracy: the 3 x 3 region is the command the robot would get
+    in_region = np.array([region_of(px, py) == target for px, py in arr[:, 1:3]])
+    m["region_at_end"] = region_of(x, y)
+    m["region_at_end_correct"] = 100.0 if m["region_at_end"] == target else 0.0
+    if total > 0:
+        m["time_in_region"] = 100.0 * float(np.sum(dt[in_region])) / total
+    end = t >= t[-1] - END_WINDOW_S
+    m["end_time_in_region"] = 100.0 * float(np.sum(dt[end & in_region])) / max(float(np.sum(dt[end])), 1e-9)
+    t_stay = None
+    for ti, ok in zip(t, in_region):
+        if not ok:
+            t_stay = None
+        elif t_stay is None:
+            t_stay = ti
+        if t_stay is not None and ti - t_stay >= DWELL_S:
+            m["region_reach_time"] = float(t_stay - t_shown)
+            break
+    m["region_hit"] = 100.0 if m["region_reach_time"] is not None else 0.0
     return m
 
 
@@ -230,7 +261,8 @@ class BlindTest:
         self.trial_i = -1
         self.trial = None
         self.t_shown = None
-        self.t_enter = None    # first entry into the target circle
+        self.t_inside = None   # entry of the current stay in the target circle
+        self.t_enter = None    # entry of the first stay of DWELL_S (the hit)
         self.samples = []
         self.hand = []
         self.end_reason = None
@@ -248,6 +280,7 @@ class BlindTest:
             return
         self.trial = self.trials[self.trial_i]
         self.t_shown = t
+        self.t_inside = None
         self.t_enter = None
         self.samples = []
         self.hand = []
@@ -268,8 +301,12 @@ class BlindTest:
         self.trajectory.append((self.trial_i + 1, self.trial["target"], t, x, y, int(hand_detected)))
         self.samples.append((t, x, y))
         self.hand.append(hand_detected)
-        if self.t_enter is None and math.hypot(x - self.trial["x"], y - self.trial["y"]) < TARGET_RADIUS:
-            self.t_enter = t
+        if math.hypot(x - self.trial["x"], y - self.trial["y"]) >= TARGET_RADIUS:
+            self.t_inside = None   # left the circle: the stay restarts
+        elif self.t_inside is None:
+            self.t_inside = t
+        if self.t_enter is None and self.t_inside is not None and t - self.t_inside >= DWELL_S:
+            self.t_enter = self.t_inside
 
     def _end_trial(self, t: float) -> None:
         self._record_trial(t, success=True, reason="completed")
@@ -283,18 +320,19 @@ class BlindTest:
         goal = (tr["x"], tr["y"])
         metrics = compute_trial_metrics(self.samples, goal, self.t_shown, self.t_enter,
                                         MOTION_ONSET_SPEED, SPEED_PEAK_THRESHOLD, RESAMPLE_HZ)
-        blind = blind_metrics(self.samples, self.hand, goal, self.positions, tr["target"])
+        blind = blind_metrics(self.samples, self.hand, goal, self.positions, tr["target"], self.t_shown,
+                              self.t_enter)
         rel = lambda ts: (ts - self.t_start) if ts is not None else None
         self.results.append({
             "trial": self.trial_i + 1, "target": tr["target"], "target_number": self.trial_i + 1,
             "goal_x": tr["x"], "goal_y": tr["y"],
             "success": success, "end_reason": reason,
-            # Session times (s from ENTER): target shown, first entry, target changed
+            # Session times (s from ENTER): target shown, entry of the hit, target changed
             "t_shown": rel(self.t_shown),
             "t_enter": rel(self.t_enter),
             "t_end": rel(t),
             "trial_duration": t - self.t_shown,
-            **metrics,   # reach_time = first entry - t_shown
+            **metrics,   # reach_time = entry of the hit - t_shown
             **blind,
         })
 
@@ -321,7 +359,7 @@ class BlindTest:
                 "canvas": [CANVAS_W, CANVAS_H], "target_radius": TARGET_RADIUS,
                 "targets": {str(k): list(v) for k, v in sorted(self.positions.items())},
                 "target_sequence": [tr["target"] for tr in self.trials],
-                "trial_s": TRIAL_S, "end_window_s": END_WINDOW_S,
+                "trial_s": TRIAL_S, "end_window_s": END_WINDOW_S, "dwell_s": DWELL_S,
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }

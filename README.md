@@ -115,6 +115,7 @@ Metrics for every goal ([`reaching_metrics.py`](reachy_bomi/reaching_metrics.py)
 | `max_deviation` | max perpendicular distance from the ideal line onset -> goal centre |
 | `dimensionless_jerk`, `log_dimensionless_jerk` | smoothness (Hogan & Sternad 2009) |
 | `n_speed_peaks`, `mean_speed`, `peak_speed` | speed profile |
+| `initial_direction_error`, `initial_direction_error_peak` | angle [deg] between the initial movement direction (onset -> position 0.2 s later, or at the first speed peak) and the direction onset -> goal centre: the aiming error before any correction |
 
 Metrics for region goals only:
 
@@ -151,16 +152,19 @@ During the test the cursor is **never shown**. Only the **current target** is on
 
 Results go to `results_blind/<subject>_blind_test<N>_{trials,blocks,trajectory}.csv` and `_summary.json` (a repeated test number gets `_1`, `_2`, ... appended). The blocks file has one row per block of 4 trials (each target once). Test N is compared with the subject's latest session of **every earlier test** (1 … N−1): the main metrics of each and the differences (test N − test k) are printed as a table and stored under `comparison_with_previous` in the summary.
 
-Per-trial metrics (canvas px, distances from the target centre). The `reaching_metrics.py` kinematics are also computed, up to the first entry:
+Per-trial metrics (canvas px, distances from the target centre). The `reaching_metrics.py` kinematics are also computed, up to the entry of the hit (to the end of the trial for a miss):
 
 | Metric | Meaning |
 |---|---|
-| `hit`, `reach_time` | 100 if the cursor entered the target circle, and the time to the first entry |
-| `time_in_target`, `on_target_at_end` | % of the 5 s inside the circle, and 100 if inside when the target changes |
+| `hit`, `reach_time` | 100 if the cursor stayed inside the target circle for 0.5 s (`DWELL_S`, as in the training; crossing it is not a hit), and the time to the entry of that stay |
+| `time_in_target`, `on_target_at_end` | % of the 4 s inside the circle, and 100 if inside when the target changes |
 | `initial_error`, `final_error`, `end_error`, `min_error` | distance when shown, when the target changes, mean over the last 1 s, and closest approach |
 | `relative_final_error` | `final_error / initial_error` (0 = perfect, 1 = did not get closer) |
 | `chosen_target`, `chosen_correct` | the target closest to the cursor when the target changes, and 100 if it is the current one |
 | `hand_lost` | % of the trial without a tracked hand |
+| `region_at_end`, `region_at_end_correct` | region (1-9) of the cursor when the target changes, and 100 if it is the target's region (the command the robot would get) |
+| `end_time_in_region`, `time_in_region` | % of the last 1 s, and of the whole trial, in the target's region |
+| `region_hit`, `region_reach_time` | 100 if the cursor stayed in the target's region for 0.5 s, and the time to the entry of that stay |
 
 ---
 
