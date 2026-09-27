@@ -153,7 +153,7 @@ SUMMARY_KEYS = METRIC_KEYS
 
 
 def summarize(results: list, keys=SUMMARY_KEYS) -> dict:
-    """Success counts/rates plus the mean of each metric over successful trials."""
+    """Success counts/rates plus the mean and the median of each metric over successful trials."""
     n = len(results)
     n_success = sum(1 for r in results if r.get("success"))
     summary = {
@@ -164,6 +164,7 @@ def summarize(results: list, keys=SUMMARY_KEYS) -> dict:
     for key in keys:
         vals = [r[key] for r in results if r.get("success") and r.get(key) is not None]
         summary[f"mean_{key}"] = float(np.mean(vals)) if vals else None
+        summary[f"median_{key}"] = float(np.median(vals)) if vals else None
     return summary
 
 

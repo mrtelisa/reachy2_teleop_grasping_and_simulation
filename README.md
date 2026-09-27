@@ -101,7 +101,7 @@ Results go to `results_regions/`. A subject with a previous session of the same 
 | `<subject>_regions_<phase>_trials.csv` | one row per goal (home or region): times and metrics |
 | `<subject>_regions_<phase>_blocks.csv` | one row per block of 8 targets (one repetition of every region): the learning curve, 12 blocks |
 | `<subject>_regions_<phase>_trajectory.csv` | every cursor sample: trial, kind, region, t, x, y, `cursor_visible` |
-| `<subject>_regions_<phase>_summary.json` | `time_total` (= the on-screen timer: first entry into the home -> last goal); means over all region goals and the returns, per region and per block, plus the config |
+| `<subject>_regions_<phase>_summary.json` | `time_total` (= the on-screen timer: first entry into the home -> last goal); means and medians over all region goals and the returns, per region and per block, plus the config |
 
 A **post** session is compared with the subject's latest **pre** session: the differences (post − pre) of the main region metrics are printed and stored under `comparison_with_pre` in the summary.
 
@@ -125,6 +125,16 @@ Metrics for region goals only:
 | `region_at_reveal`, `region_at_reveal_correct` | region of the cursor when it reappears, and 100 if it is the target |
 | `first_region`, `first_region_correct` | first region visited, i.e. stayed in for at least 0.25 s (the target counts at once), and 100 if it is the target |
 | `n_wrong_regions` | distinct other regions visited before the target |
+| `error_at_reveal` | distance [px] from the target centre when the cursor reappears |
+
+Metrics for every goal (home or region):
+
+| Metric | Meaning |
+|---|---|
+| `n_entries` | entries into the circle, the one of the completed dwell included (1 = went in and stayed) |
+| `dwell_time` | first entry -> dwell completed (0.5 s if it stayed at the first entry) |
+
+Main metrics of the analysis (first in the pre/post comparison): `reach_time`, `normalized_path_length`, `initial_direction_error`, `region_at_reveal_correct`, then `n_speed_peaks`, `movement_time`, `reached_hidden`.
 
 ---
 

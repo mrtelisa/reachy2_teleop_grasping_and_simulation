@@ -54,7 +54,14 @@ Metrics of every goal: the reaching_metrics.py kinematics
                             stayed in for MIN_VISIT_S (the target counts at once)
   first_region_correct      100 if it was the target, else 0
   n_wrong_regions           distinct other regions visited before the target
-Averages (mean_* in the summary) over all region goals, per region, and per
+  error_at_reveal           distance [px] from the target centre when the cursor
+                            reappears (continuous version of region_at_reveal_correct)
+Every goal (home or region) also gets:
+  n_entries                 entries into the circle, the one of the completed
+                            dwell included (1 = it went in and stayed)
+  dwell_time                first entry -> dwell completed (DWELL_S if it stayed
+                            at the first entry): how well the cursor is held still
+Means and medians (mean_*, median_* in the summary) over all region goals, per region, and per
 block of BLOCK_SIZE (8) consecutive targets = one repetition of every region
 (12 blocks: learning curve).
 
@@ -116,12 +123,16 @@ MOTION_ONSET_SPEED = 40.0     # [px/s]
 SPEED_PEAK_THRESHOLD = 80.0   # [px/s]
 RESAMPLE_HZ = 50.0
 BLIND_KEYS = ("reached_hidden", "region_at_reveal", "region_at_reveal_correct",
-              "first_region", "first_region_correct", "n_wrong_regions")
+              "first_region", "first_region_correct", "n_wrong_regions", "error_at_reveal")
+DWELL_KEYS = ("n_entries", "dwell_time")   # every goal, home or region
 # Averaged in the summary (region numbers are not)
-REGION_KEYS = METRIC_KEYS + tuple(k for k in BLIND_KEYS if k not in ("region_at_reveal", "first_region"))
-# Printed at the end and compared pre -> post
-MAIN_KEYS = ("reach_time", "normalized_path_length", "reached_hidden", "region_at_reveal_correct",
-             "first_region_correct", "n_wrong_regions")
+REGION_KEYS = METRIC_KEYS + DWELL_KEYS + tuple(k for k in BLIND_KEYS if k not in ("region_at_reveal", "first_region"))
+HOME_KEYS = METRIC_KEYS + DWELL_KEYS
+# Printed at the end and compared pre -> post: the main metrics of the analysis first
+MAIN_KEYS = ("reach_time", "normalized_path_length", "initial_direction_error", "region_at_reveal_correct",
+             "n_speed_peaks", "movement_time", "reached_hidden",
+             "reaction_time", "error_at_reveal", "first_region_correct", "n_wrong_regions",
+             "n_entries", "dwell_time")
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_regions")
 WINDOW = "BoMI - Reaching (regions)"
@@ -180,6 +191,9 @@ def blind_metrics(samples: list, target_region: int, t_shown: float, t_enter: fl
     if not samples:
         return m
     t_reveal = t_shown + HIDDEN_S
+    at_reveal = [(t, x, y) for t, x, y in samples if t <= t_reveal] or samples[:1]
+    x0, y0, x1, y1 = region_bounds(target_region)
+    m["error_at_reveal"] = math.hypot(at_reveal[-1][1] - (x0 + x1) / 2.0, at_reveal[-1][2] - (y0 + y1) / 2.0)
     if t_enter is not None:
         m["reached_hidden"] = 100.0 if t_enter < t_reveal else 0.0
     if t_enter is not None and t_enter < t_reveal:
@@ -309,6 +323,8 @@ class RegionsTest:
         self.trial = None
         self.t_shown = None   # goal shown: disc (home) / target circle (region)
         self.t_enter = None
+        self.t_first_enter = None   # first entry into the circle of the goal
+        self.n_entries = 0
         self.samples = []
         self.end_reason = None
 
@@ -325,6 +341,8 @@ class RegionsTest:
         self.trial = self.trials[self.trial_i]
         self.t_shown = t
         self.t_enter = None
+        self.t_first_enter = None
+        self.n_entries = 0
         self.samples = []
 
     def active(self) -> bool:
@@ -348,6 +366,9 @@ class RegionsTest:
             return
         if self.t_enter is None:
             self.t_enter = t
+            self.n_entries += 1
+            if self.t_first_enter is None:
+                self.t_first_enter = t
             if tr["kind"] == "home" and self.t_session0 is None:
                 self.t_session0 = t   # first entry into the home: the session timer starts now
                 print("  home entered: session timer started")
@@ -395,6 +416,8 @@ class RegionsTest:
             "trial_duration": t - self.t_shown,
             **metrics,   # reach_time = t_enter - t_shown
             **blind,     # region goals only
+            "n_entries": self.n_entries if success else None,
+            "dwell_time": (t - self.t_first_enter) if success else None,
         })
 
     def finish(self, t: float, reason: str = None) -> dict:
@@ -414,7 +437,7 @@ class RegionsTest:
             "timestamp": self.timestamp,
             # centre -> target region (what the test measures)
             "regions": summarize(targets, keys=REGION_KEYS),
-            "homes": summarize(homes),      # region -> back to the centre
+            "homes": summarize(homes, keys=HOME_KEYS),      # region -> back to the centre
             # Same statistics per region, over its repetitions
             "per_region": {str(reg): summarize([r for r in targets if r["region"] == reg], keys=REGION_KEYS)
                            for reg in sorted({r["region"] for r in targets})},
@@ -582,8 +605,10 @@ def main() -> None:
     fmt = lambda v, u="s": f"{v:.2f}{u}" if v is not None else "-"
     print(f"\nSession over ({summary['end_reason']}): {a['n_success']}/{summary['n_targets_total']} "
           f"targets reached, time {fmt(summary['time_total'])}")
-    print(f"  centre -> region: mean time {fmt(a['mean_reach_time'])}, norm. path {fmt(a['mean_normalized_path_length'], '')}, "
-          f"reached hidden {fmt(a['mean_reached_hidden'], '%')}, correct at reveal {fmt(a['mean_region_at_reveal_correct'], '%')}, "
+    print(f"  centre -> region: mean time {fmt(a['mean_reach_time'])} (movement {fmt(a['mean_movement_time'])}), "
+          f"norm. path {fmt(a['mean_normalized_path_length'], '')}, "
+          f"initial direction error {fmt(a['mean_initial_direction_error'], 'deg')}, "
+          f"speed peaks {fmt(a['mean_n_speed_peaks'], '')}, reached hidden {fmt(a['mean_reached_hidden'], '%')}, correct at reveal {fmt(a['mean_region_at_reveal_correct'], '%')}, "
           f"first region correct {fmt(a['mean_first_region_correct'], '%')}, wrong regions {fmt(a['mean_n_wrong_regions'], '')}")
     print(f"  region -> centre: mean time {fmt(h['mean_reach_time'])}, norm. path {fmt(h['mean_normalized_path_length'], '')}")
     cmp = summary.get("comparison_with_pre")
