@@ -33,7 +33,7 @@ webcam → MediaPipe → autoencoder cursor → 9-region velocity → reachy2_sd
 - **`stream.py`** — blocking camera live feed used by `camera_viewer.py`.
 - **`graphs.py`** — matplotlib diagnostics (point cloud stages, planned grasp), called from `reachy_detection.py`/`reachy_control.py`; every figure is also saved to `graphs/`.
 - **`safety.py`** — quit/shutdown safety net: a local `quit_requested` check (Q/ESC or window closed, while a cv2 window has focus) plus an OS-level global watcher (`pynput`, works regardless of focus, even mid-`arm.goto`) that triggers `emergency_shutdown`.
-- **`session_metrics.py`** — session metrics (durations, path lengths, region shares, dwells, objects moved) and the 20 Hz odometry log, written to `results_robot/` at the end of every `reachy_control.py` run. `plot_odometry.py` draws the path of a session from its odometry csv.
+- **`session_metrics.py`** — session metrics (phase durations, path length and rotation per leg, command sequence, region shares, dwells, manual counts) and the 20 Hz odometry and region logs, written to `results_robot/` at the end of every `reachy_control.py` run. `plot_odometry.py` draws the path of a session from its odometry csv.
 
 Dependencies between these run one way only, with no cycles: `reachy_grasp.py`/`bomi_teleop.py` have no dependency on the rest, `reachy_detection.py` depends only on `reachy_grasp.py` (for the shared `ObjectGeometry` type), `reachy_selection.py` depends on both, and `reachy_control.py` ties everything together.
 
@@ -119,22 +119,42 @@ ESC/Q stop the robot from *any* window or the terminal, at any point — see `sa
 
 Every run of `reachy_control.py` writes `results_robot/<subject>_run<N>_session.json` (`--subject`, default `S000`; `--run` N = 1 or 2; a repeated run gets `_1`, `_2`, ... appended, e.g. `S001_run1_1`), collected by [`session_metrics.py`](reachy_bomi/session_metrics.py) from the mobile base odometry and the pipeline events. Written in `main()`'s `finally`, so it exists even after a quit or an abort (`end_reason`: `finished` / `quit` / `aborted: ...`).
 
+At the end of the run, once the robot is off, the terminal asks the experimenter for what the software cannot see — collisions with obstacles, objects dropped by the robot during the grasp and during the transport/placement (ENTER = 0), plus free notes — and saves the JSON again (`manual`).
+
+The task is split into phases by the pipeline events: **outbound** (start → pre-grasp dwell accepted, full speed), **approach** (→ object selection opened, reduced speed), **grasp** (→ object in the carry pose), **return** (→ placement grid opened, with the object), **placement** (→ object placed). Run 1 and run 2 are compared phase by phase (outbound with outbound, return with return).
+
 | Field | Meaning |
 |---|---|
-| `test_duration` | from the start of Control after the cursor preview (Reachy starts moving) to the "No" to "pick another object?" |
+| `success` | the object has been placed |
+| `phase_durations`, `phase_completed` | duration [s] of every phase reached; the last one reached runs to the end of the test and is not completed |
+| `test_duration` | from the start of Control after the cursor preview (Reachy starts moving) to the end of the test |
 | `navigation_duration` | from the same start to the first time object selection opens (`reached_object_selection` says whether it did) |
-| `n_repositioning` | how many times repositioning navigation was used |
+| `n_repositioning`, `n_repositioning_per_phase` | how many times repositioning navigation was used, in the grasp / placement phase |
+| `n_dwell`, `n_dwell_declined` (+ `_per_phase`) | dwells completed while driving, and how many of them were answered "No" to "Do you want to continue on the pipeline?" |
 | `n_objects_moved`, `objects_moved` | objects picked **and** placed (YOLO class names, in order) |
-| `path_length_max_speed` / `_reduced_speed` / `_repositioning` | base path [m] driven at full speed (before the pre-grasp pose), at reduced speed (after it) and during repositioning |
-| `path_length_navigation`, `path_length_total` | max + reduced (the path up to the first object selection); all three |
-| `optimal_path_length`, `normalized_path_length` | `session_metrics.DEFAULT_OPTIMAL_PATH_LENGTH` [m] — **set it in the file before the session** (depends on the room layout) — and `path_length_navigation / optimal_path_length` |
+| `manual` | `n_collisions`, `n_drops_grasp`, `n_drops_transport`, `notes`, typed in by the experimenter |
+| `path_length_outbound`, `path_length_return` | base path [m] of the outbound and return legs |
+| `cumulative_rotation_outbound`, `cumulative_rotation_return` | sum of \|Δθ\| [rad] on the two legs: the turning on the spot, which the path length does not see |
+| `path_length_max_speed` / `_reduced_speed` / `_repositioning` / `_transport`, `path_length_navigation`, `path_length_total` | path [m] per driving mode; max + reduced; all |
 | `log_dimensionless_jerk` | smoothness of the navigation trajectory (start → first object selection) |
-| `region_time_percent`, `region_time_seconds` | share of the driving time the cursor spent in each of the 9 regions — cursor previews and dialogs excluded; the time of every completed dwell (`MODE_SWITCH_HOLD_SECONDS` = 10 s each; the sum is reported as `region5_dwell_time_removed`) is subtracted from region 5 first |
-| `n_dwell`, `n_dwell_declined` | dwells completed while driving (Control + repositioning), and how many of them were answered "No" to "Do you want to continue on the pipeline?" (dwell + switch with no change of state) |
+| `region_time_percent`, `region_time_seconds` | share of the driving time the cursor spent in each of the 9 regions — previews and dialogs excluded, the completed dwells (10 s each, sum in `region5_dwell_time_removed`) removed from region 5 |
+| `driving` | the driving metrics below, per driving phase (`outbound`, `approach`, `return`, `repositioning`) and over all the driving (`all`) |
+
+`driving.<phase>`: `driving_time`, `path_length`, `cumulative_rotation`, `log_dimensionless_jerk`, `stop_time` / `stop_percent` (cursor in region 5, robot still, dwells removed), `region_time_*`, and the metrics of the **command sequence**. A command is a region the cursor stayed in for at least `MIN_COMMAND_S` = 0.25 s (shorter visits are jitter on a border and are merged into the surrounding command); changes never span two driving stretches (a preview or a dialog in between):
+
+| Field | Meaning |
+|---|---|
+| `n_commands`, `n_command_changes`, `command_changes_per_min` | how much the control changes between regions |
+| `mean_command_duration`, `median_command_duration` | how long a motion command (region ≠ 5) is held [s] |
+| `non_adjacent_percent` | changes between regions that do not touch (e.g. 3 → 7): the cursor swept across the grid, out of control |
+| `n_reversals`, `reversal_percent` | sign changes of the forward/back or left/right command between consecutive motion commands, a stop in between included (2-8, 2-5-8, 1-3, ...): overcorrections (as the steering reversal rate) |
+| `stop_passage_percent` | motion → motion changes with a stop (5) in between: stop-and-go (5 2 5 2) vs fluid (2 3 2 1) |
+| `sequence_entropy` | conditional entropy H(next \| current) of the command changes [bits] (as the steering entropy): 0 = predictable |
+| `command_sequences` | the command sequence of every driving stretch |
 
 The automatic back-up/rotation at the end is not part of any path length.
 
-Next to the JSON, every session also writes `<subject>_run<N>_odometry.csv` (`odometry_file` in the JSON): the raw mobile base odometry sampled at the control-loop rate (`PUBLISH_HZ` = 20 Hz) while driving — `t` (unix time), `t_test` (s since the test start), `x`, `y` [m], `theta` [rad], `vx`, `vy` [m/s], `vtheta` [rad/s] and the driving `mode` (`max_speed` / `reduced_speed` / `repositioning`) — so any other trajectory parameter can be computed afterwards.
+Next to the JSON, every session also writes `<subject>_run<N>_odometry.csv` (`odometry_file`): the raw mobile base odometry sampled at the control-loop rate (`PUBLISH_HZ` = 20 Hz) while driving — `t` (unix time), `t_test` (s since the test start), `x`, `y` [m], `theta` [rad], `vx`, `vy` [m/s], `vtheta` [rad/s] and the driving `mode` (`max_speed` / `reduced_speed` / `repositioning` / `transport`) — and `<subject>_run<N>_regions.csv` (`regions_file`): every cursor region tick while driving (`t_test`, `stretch`, `mode`, `region`), so any other trajectory or command metric can be computed afterwards.
 
 ### Calibration maps — `calibrate_bomi.py` (once), `customize_bomi.py` (per participant)
 

@@ -260,6 +260,8 @@ def _select_and_grasp(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
                 return None, None, crs_x, crs_y
             continue
 
+        if _metrics is not None:
+            _metrics.object_in_hand()
         return geometry, plan, crs_x, crs_y
 
 
@@ -376,6 +378,7 @@ def _transport_navigation(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y
     )
     if not quit_now and _metrics is not None:
         _metrics.dwell(True)
+        _metrics.placement_grid()
     safety.destroy_window(map_window)
     stop_camera_viewer()
     return crs_x, crs_y, quit_now
@@ -538,7 +541,7 @@ def _drive_until_center_dwell(cap, landmarker, bomi_map, cursor_filter, crs_x, c
         center_hold_start = (center_hold_start or now) if (hand_detected and region == 5) else None
         center_progress = min((now - center_hold_start) / hold_seconds, 1.0) if center_hold_start else 0.0
         if _metrics is not None:
-            _metrics.region_tick(region, now)
+            _metrics.region_tick(region, now, odometry_mode)
 
         cv2.imshow(map_window, bomi_teleop.draw_cursor_map(crs_x, crs_y, region, message))
         display.move(map_window, *bomi_teleop.MAP_WINDOW_POS)  # re-pin, the WM can move it
@@ -618,6 +621,8 @@ def teleop_with_grasp_switch(cap, landmarker, bomi_map, mobile_base, depth_cam, 
 
         if not pre_grasp_reached:
             # First dwell: hold the base while the arms move to the pre-grasp pose
+            if _metrics is not None:
+                _metrics.pre_grasp()
             mobile_base.lidar.safety_critical_distance = bomi_teleop.LIDAR_CRITICAL_DISTANCE_SLOWDOWN
             print("\nMoving arms to pre-grasping pose "
                   f"(elbow pitch {reachy_pregrasp.PRE_GRASP_ELBOW_PITCH_DEG:.0f} deg)...")
@@ -724,7 +729,6 @@ def main() -> None:
     cli_args.subject = bomi_teleop.strip_npz(cli_args.subject)  # "elisa.npz" -> "elisa" in the metrics file names
 
     global _metrics
-    # optimal path length for normalized_path_length: session_metrics.DEFAULT_OPTIMAL_PATH_LENGTH
     _metrics = session_metrics.SessionMetrics(cli_args.subject, cli_args.run, dwell_seconds=MODE_SWITCH_HOLD_SECONDS)
 
     if not os.path.exists(cli_args.model):
@@ -832,8 +836,11 @@ def main() -> None:
         _metrics.end_test("quit")
         summary = _metrics.save()
         print(f"[metrics] test {summary['test_duration'] or 0:.0f}s, navigation {summary['navigation_duration'] or 0:.0f}s, "
-              f"path {summary['path_length_total']:.2f} m (nav {summary['path_length_navigation']:.2f} m), "
+              f"path {summary['path_length_total']:.2f} m (outbound {summary['path_length_outbound']:.2f} m, "
+              f"return {summary['path_length_return']:.2f} m), "
               f"{summary['n_repositioning']} repositioning, objects moved: {summary['objects_moved']}")
+        print("[metrics] phases: " + ", ".join(f"{p} {d:.0f}s" + ("" if summary['phase_completed'][p] else " (not completed)")
+                                               for p, d in summary['phase_durations'].items() if d is not None))
         safety.safe_robot_shutdown(reachy, mobile_base, rotate_base_before_shutdown=_grasp_phase_entered)
         if cap is not None:
             cap.release()
@@ -841,6 +848,9 @@ def main() -> None:
         if landmarker is not None:
             landmarker.close()
         reachy.disconnect()
+        # What the software cannot see (collisions, dropped objects), once the robot is off
+        _metrics.ask_manual()
+        _metrics.save()
 
 
 if __name__ == "__main__":
