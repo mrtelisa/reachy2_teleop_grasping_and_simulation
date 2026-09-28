@@ -52,6 +52,16 @@ PLACE_GRID_CELL_SIZE_M = 0.12
 PLACE_GRID_SAMPLE_STRIDE_PX = 10
 PLACE_GRID_CANDIDATE_COUNT = reachy_grasp.QUICK_REACHABILITY_CANDIDATE_COUNT
 
+# Destination table: its plane is fitted on the placement frame, so that the
+# object is released at the distance from it that it had from the grasp table.
+# The fit is accepted only if plausible, otherwise the destination is assumed
+# at the grasp table's height (the object comes down by the lift distance).
+DEST_TABLE_MAX_HEIGHT_DIFF_M = 0.20   # [m] max |destination - grasp table| height
+DEST_TABLE_MAX_TILT_DEG = 15.0        # [deg] max angle between the two table normals
+DEST_TABLE_MIN_INLIERS = 300          # points on the fitted plane
+DEST_TABLE_PLANE_DISTANCE_M = 0.01    # [m] RANSAC inlier distance (single, unfused depth frame)
+DEST_TABLE_SAMPLE_STRIDE_PX = 4
+
 COLOR_UNREACHABLE = (0, 0, 200)   # BGR red, translucent fill over unreachable/unknown table area
 UNREACHABLE_TINT_ALPHA = 0.35
 
@@ -69,6 +79,7 @@ class PlaceGrid(NamedTuple):
     cell_targets: dict                # {(row, col): xyz point}
     cell_arms: dict                   # {(row, col): arm_name or None if neither arm can place there}
     unreachable_mask: np.ndarray      # full-res bool, True where the area is unknown or unreachable
+    table_height_change: float = 0.0  # [m] destination - grasp table height (0 = same height, or fit rejected)
 
 CONFIRM_WINDOW_NAME = "BoMI - Confirm Grasp"
 CONFIRM_CANVAS_WIDTH = 520
@@ -285,21 +296,61 @@ def select_object_to_grasp_bomi(
             return None, None, (base_frame, detections, labels), crs_x, crs_y
 
 
-def _arm_that_can_place_at(reachy, grasp_plans: dict, geometry, target_point: np.ndarray) -> Optional[str]:
+def estimate_table_height_change(depth_cam, depth_frame, geometry) -> float:
+    """Height of the destination table minus that of the grasp table [m, along
+    the grasp table's normal], from a RANSAC plane fitted on the placement
+    frame. Only points within DEST_TABLE_MAX_HEIGHT_DIFF_M of the grasp table
+    and within the arm's reach are used, so the floor and far walls cannot
+    win the fit. 0.0 (same height, the object comes down by the lift
+    distance) if the grasp table height is unknown or the fit is not plausible."""
+    if geometry.table_height is None:
+        print("[place] grasp table height unknown -- destination assumed at the same height")
+        return 0.0
+    normal = geometry.table_normal if geometry.table_normal is not None else reachy_grasp.DEFAULT_TABLE_NORMAL
+    normal = normal / np.linalg.norm(normal)
+    _, _, points = reachy_detection.estimate_world_points_for_frame(
+        depth_cam, depth_frame, stride=DEST_TABLE_SAMPLE_STRIDE_PX, correct_distortion=True,
+    )
+    fallback = f"destination assumed at the grasp table height ({geometry.table_height:.3f} m)"
+    if points.shape[0] == 0:
+        print(f"[place] no depth for the destination table -- {fallback}")
+        return 0.0
+    heights = points @ normal
+    near = (np.abs(heights - geometry.table_height) <= DEST_TABLE_MAX_HEIGHT_DIFF_M) & \
+           (np.linalg.norm(points[:, :2], axis=1) <= reachy_grasp.MAX_REACH_XY_M)
+    candidates = points[near]
+    fit = reachy_detection.fit_table_plane(candidates, DEST_TABLE_PLANE_DISTANCE_M)
+    if fit is None or fit[1].size < DEST_TABLE_MIN_INLIERS:
+        print(f"[place] destination table plane not found -- {fallback}")
+        return 0.0
+    dest_normal, inliers = fit
+    tilt_deg = np.degrees(np.arccos(np.clip(abs(np.dot(dest_normal, normal)), -1.0, 1.0)))
+    change = float(np.median(candidates[inliers] @ normal)) - geometry.table_height
+    if tilt_deg > DEST_TABLE_MAX_TILT_DEG or abs(change) > DEST_TABLE_MAX_HEIGHT_DIFF_M:
+        print(f"[place] destination plane rejected ({tilt_deg:.0f} deg from the grasp table, "
+              f"{change * 100:+.1f} cm) -- {fallback}")
+        return 0.0
+    print(f"[place] destination table {change * 100:+.1f} cm from the grasp table "
+          f"({inliers.size} points, {tilt_deg:.0f} deg from its normal): release height adjusted")
+    return change
+
+
+def _arm_that_can_place_at(reachy, grasp_plans: dict, geometry, target_point: np.ndarray,
+                           height_change: float = 0.0) -> Optional[str]:
     """Which arm of grasp_plans can place the object at target_point (the arm on the
     target's side is tried first), or None."""
     preferred = "r_arm" if target_point[1] < 0 else "l_arm"
     for arm_name in sorted(grasp_plans, key=lambda name: name != preferred):
         place_plan = reachy_grasp.plan_place(
             reachy, grasp_plans[arm_name], geometry.table_normal, target_point,
-            candidate_count=PLACE_GRID_CANDIDATE_COUNT,
+            candidate_count=PLACE_GRID_CANDIDATE_COUNT, height_change=height_change,
         )
         if place_plan is not None:
             return arm_name
     return None
 
 
-def _build_place_grid(depth_cam, depth_frame, frame_w, frame_h, reachy, grasp_plans, geometry):
+def _build_place_grid(depth_cam, depth_frame, frame_w, frame_h, reachy, grasp_plans, geometry, height_change=0.0):
     """Classify the frame's pixels (every stride-th) into PLACE_GRID_CELL_SIZE_M cells
     laid on the table plane, and IK-check each cell with plan_place for the arms in
     grasp_plans. Returns (stride, coarse_row_img, coarse_col_img, cell_targets,
@@ -330,7 +381,7 @@ def _build_place_grid(depth_cam, depth_frame, frame_w, frame_h, reachy, grasp_pl
             rr, cc = int(rr), int(cc)
             center = origin + (cc + 0.5) * PLACE_GRID_CELL_SIZE_M * basis_u + (rr + 0.5) * PLACE_GRID_CELL_SIZE_M * basis_v
             cell_targets[(rr, cc)] = center
-            cell_arms[(rr, cc)] = _arm_that_can_place_at(reachy, grasp_plans, geometry, center)
+            cell_arms[(rr, cc)] = _arm_that_can_place_at(reachy, grasp_plans, geometry, center, height_change)
 
         coarse_unreachable = coarse_row_img == -1
         valid = ~coarse_unreachable
@@ -367,13 +418,15 @@ def build_place_grid(depth_cam, reachy, grasp_plans, geometry) -> Optional[Place
     cv2.imshow(reachy_detection.CAM_WINDOW_NAME, wait_frame)
     cv2.waitKey(1)
 
+    height_change = estimate_table_height_change(depth_cam, depth_frame, geometry)
     stride, coarse_row_img, coarse_col_img, cell_targets, cell_arms, unreachable_mask = _build_place_grid(
-        depth_cam, depth_frame, frame_w, frame_h, reachy, grasp_plans, geometry,
+        depth_cam, depth_frame, frame_w, frame_h, reachy, grasp_plans, geometry, height_change,
     )
     return PlaceGrid(
         base_frame=base_frame, stride=stride,
         coarse_row_img=coarse_row_img, coarse_col_img=coarse_col_img,
         cell_targets=cell_targets, cell_arms=cell_arms, unreachable_mask=unreachable_mask,
+        table_height_change=height_change,
     )
 
 

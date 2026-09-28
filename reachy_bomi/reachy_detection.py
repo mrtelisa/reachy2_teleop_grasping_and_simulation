@@ -347,24 +347,38 @@ def _remove_flying_pixels(
     return np.asarray(cleaned.points)
 
 
-def _remove_table_plane(
-    point_cloud: np.ndarray, distance_threshold: float = TABLE_PLANE_DISTANCE_M,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """RANSAC-fits the single dominant plane in point_cloud (the table)
-    and returns everything else, plus that plane's unit normal (oriented up
-    and away from the table). Returns (point_cloud, None) if too few points to fit."""
-    if point_cloud.shape[0] < 4:
-        return point_cloud, None
+def fit_table_plane(
+    points: np.ndarray, distance_threshold: float = TABLE_PLANE_DISTANCE_M,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """RANSAC-fits the single dominant plane in points: (unit normal oriented
+    up, inlier indices), or None if too few points to fit."""
+    if points.shape[0] < 4:
+        return None
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(point_cloud)
+    pcd.points = o3d.utility.Vector3dVector(points)
     plane_model, inliers = pcd.segment_plane(distance_threshold=distance_threshold, ransac_n=3, num_iterations=2000)
-    without_plane = pcd.select_by_index(inliers, invert=True)
-
     normal = np.array(plane_model[:3], dtype=np.float64)
     normal /= np.linalg.norm(normal)
     if normal[2] < 0:
         normal = -normal
-    return np.asarray(without_plane.points), normal
+    return normal, np.asarray(inliers, dtype=int)
+
+
+def _remove_table_plane(
+    point_cloud: np.ndarray, distance_threshold: float = TABLE_PLANE_DISTANCE_M,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[float]]:
+    """RANSAC-fits the single dominant plane in point_cloud (the table)
+    and returns everything else, that plane's unit normal (oriented up and
+    away from the table) and its height along the normal (median of the
+    inliers, used to place the object at the same distance from the
+    destination table). Returns (point_cloud, None, None) if too few points to fit."""
+    fit = fit_table_plane(point_cloud, distance_threshold)
+    if fit is None:
+        return point_cloud, None, None
+    normal, inliers = fit
+    keep = np.ones(point_cloud.shape[0], dtype=bool)
+    keep[inliers] = False
+    return point_cloud[keep], normal, float(np.median(point_cloud[inliers] @ normal))
 
 
 def _largest_cluster(point_cloud: np.ndarray, eps: float = CLUSTER_EPS_M, min_points: int = CLUSTER_MIN_POINTS) -> np.ndarray:
@@ -506,12 +520,12 @@ def build_object_point_cloud(
 
     points_before_isolation = len(point_cloud)
     point_cloud = _remove_flying_pixels(point_cloud)
-    point_cloud, table_normal = _remove_table_plane(point_cloud)
+    point_cloud, table_normal, table_height = _remove_table_plane(point_cloud)
     if table_normal is not None:
         tilt_deg = np.degrees(np.arccos(np.clip(table_normal[2], -1.0, 1.0)))
         verdict = "OK" if tilt_deg < 15 else "SUSPICIOUS -- expected close to vertical (see BBOX_PADDING_PX comment)"
         print(f"Table normal: ({table_normal[0]:.3f}, {table_normal[1]:.3f}, {table_normal[2]:.3f})  "
-              f"{tilt_deg:.0f} deg from vertical  [{verdict}]")
+              f"{tilt_deg:.0f} deg from vertical  [{verdict}], height {table_height:.3f} m")
     else:
         print("Table normal: not fitted (too few points) -- reachy_grasp will fall back to a vertical assumption")
     #graphs.show_point_cloud(point_cloud, f"{class_name} - 3 after background isolation")
@@ -531,6 +545,7 @@ def build_object_point_cloud(
     return reachy_grasp.ObjectGeometry(
         class_name=class_name, shape=shape, width_m=width_m, height_m=height_m,
         centroid=centroid, axes=axes, table_normal=table_normal, point_cloud=point_cloud,
+        table_height=table_height,
     )
 
 

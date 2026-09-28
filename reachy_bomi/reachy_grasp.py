@@ -75,6 +75,7 @@ class ObjectGeometry(NamedTuple):
     axes: Optional[npt.NDArray[np.float64]]  # 3x3, columns = principal axes, sorted long -> short extent
     table_normal: Optional[npt.NDArray[np.float64]]
     point_cloud: npt.NDArray[np.float64]  # (N, 3), isolated object points, for show_grasp_plan
+    table_height: Optional[float] = None  # [m] height of the table plane along table_normal (None if not fitted)
 
 
 class GraspInterrupted(RuntimeError):
@@ -300,11 +301,14 @@ def plan_grasp(
 def plan_place(
     reachy: ReachySDK, plan: GraspPlan,
     table_normal: Optional[npt.NDArray[np.float64]], target_point: npt.NDArray[np.float64],
-    candidate_count: int = APPROACH_CANDIDATE_COUNT,
+    candidate_count: int = APPROACH_CANDIDATE_COUNT, height_change: float = 0.0,
 ) -> Optional[GraspPlan]:
     """Place poses for an object already grasped with `plan`, above target_point:
     transit at the lift height, place dropped by the same distance the lift
-    climbed (plus the arm's height margin), retreat PREGRASP_STANDOFF_M along
+    climbed (plus the arm's height margin), both shifted by height_change
+    [m, along the normal] = destination table height - grasp table height, so
+    that the object is released at the distance from the destination table
+    it had from the first one; retreat PREGRASP_STANDOFF_M along
     the gripper's own axis -- the only direction guaranteed clear of the
     object's sides. Orientation: the one the object is held in first, then
     candidate_count horizontal approaches, all keeping the gripper's X up so
@@ -319,8 +323,8 @@ def plan_place(
     normal = normal / np.linalg.norm(normal)
 
     target_inplane = target_point - normal * np.dot(target_point, normal)
-    lift_height = np.dot(plan.lift_matrix[:3, 3], normal)
-    grasp_height = np.dot(plan.grasp_matrix[:3, 3], normal) + _PLACE_HEIGHT_MARGIN_BY_ARM[plan.arm_name]
+    lift_height = np.dot(plan.lift_matrix[:3, 3], normal) + height_change
+    grasp_height = np.dot(plan.grasp_matrix[:3, 3], normal) + _PLACE_HEIGHT_MARGIN_BY_ARM[plan.arm_name] + height_change
 
     transit_position = target_inplane + normal * lift_height
     place_position = target_inplane + normal * grasp_height

@@ -317,14 +317,17 @@ def _execute_grasp_with_retries(reachy, geometry, plan: reachy_grasp.GraspPlan):
     return None
 
 
-def _replan_and_execute_place(reachy, plan: reachy_grasp.GraspPlan, geometry, target_point) -> bool:
+def _replan_and_execute_place(reachy, plan: reachy_grasp.GraspPlan, geometry, target_point,
+                              height_change: float = 0.0) -> bool:
     """plan_place -> execute_place for the arm holding the object (plan's),
-    up to MAX_GRASP_ATTEMPTS. execute_place only moves once its IK pre-check
+    released at the estimated destination table height (height_change, from
+    the placement grid), up to MAX_GRASP_ATTEMPTS. execute_place only moves once its IK pre-check
     passes. Returns True once placed, False if all attempts failed without
     moving; a reachy_grasp.GraspInterrupted (the arm did start moving)
     propagates to the caller."""
     for attempt in range(1, MAX_GRASP_ATTEMPTS + 1):
-        place_plan = reachy_grasp.plan_place(reachy, plan, geometry.table_normal, target_point)
+        place_plan = reachy_grasp.plan_place(reachy, plan, geometry.table_normal, target_point,
+                                             height_change=height_change)
         if place_plan is None:
             continue
         #graphs.show_grasp_and_place_plan(geometry, plan, place_plan, target_point,
@@ -434,7 +437,7 @@ def _select_place_and_place(cap, landmarker, bomi_map, cursor_filter, crs_x, crs
         start_camera_viewer(robot_ip)
 
         try:
-            placed = _replan_and_execute_place(reachy, plan, geometry, target_point)
+            placed = _replan_and_execute_place(reachy, plan, geometry, target_point, grid.table_height_change)
         except reachy_grasp.GraspInterrupted as exc:
             _abort_and_shutdown(reachy, mobile_base, f"[{geometry.class_name}] {exc}")
             return crs_x, crs_y
