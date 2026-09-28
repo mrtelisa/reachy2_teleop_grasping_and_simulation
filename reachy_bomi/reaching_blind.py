@@ -64,7 +64,10 @@ Results (--test 1..5; a subject who repeats the same test number gets _1,
 _2, ... appended):
   results_blind/<subject>_blind_test<N>_trials.csv       one row per trial
   results_blind/<subject>_blind_test<N>_blocks.csv       one row per block of 4 trials (each target once)
-  results_blind/<subject>_blind_test<N>_trajectory.csv   every cursor sample (trial, target, t, x, y, hand_detected)
+  results_blind/<subject>_blind_test<N>_trajectory.csv   every cursor sample (trial, target, t, x, y, hand_detected,
+                                                        + x_screen, y_screen, x_unclipped, y_unclipped, x_base, y_base:
+                                                        see reaching_regions.py); the summary also stores the map
+                                                        used and its customization ("setup")
   results_blind/<subject>_blind_test<N>_summary.json     means (all, per target, per block), config
 Test N is compared with the subject's latest session of every earlier test
 (1..N-1): the main metrics of each and the differences (test N - test k) are
@@ -90,7 +93,8 @@ import numpy as np
 import bomi
 from reaching_metrics import METRIC_KEYS, block_summaries, compute_trial_metrics, summarize
 import reaching_regions
-from reaching_regions import CANVAS_H, CANVAS_W, DWELL_S, latest_summary, region_of, session_name
+from reaching_regions import (CANVAS_H, CANVAS_W, DWELL_S, TRAJECTORY_EXTRA, extra_coordinates, fmt_extra,
+                              latest_summary, region_of, session_name, session_setup)
 
 # --- Targets: the reaching_regions.py targets of these regions (same canvas, position and radius) ---
 TARGET_REGIONS = (2, 4, 5, 9)
@@ -249,7 +253,8 @@ class BlindTest:
         self.trials = trials
         self.positions = target_positions(trials)
         self.results = []
-        self.trajectory = []   # every cursor sample: (trial, target, t, x, y, hand_detected)
+        self.trajectory = []   # every cursor sample: (trial, target, t, x, y, hand_detected, extra)
+        self.setup = {}        # map and screen of the session (session_setup), for the summary
 
         self.results_dir = results_dir
         os.makedirs(results_dir, exist_ok=True)
@@ -288,8 +293,9 @@ class BlindTest:
     def active(self) -> bool:
         return self.trial is not None and not self.end_reason
 
-    def update(self, t: float, x: float, y: float, hand_detected: bool) -> None:
-        """One frame with the current (filtered) cursor position in canvas px."""
+    def update(self, t: float, x: float, y: float, hand_detected: bool, extra: tuple = ()) -> None:
+        """One frame with the current (filtered) cursor position in canvas px;
+        extra = its TRAJECTORY_EXTRA values (logged only)."""
         if not self.active():
             return
         if t - self.t_shown >= TRIAL_S:
@@ -298,7 +304,7 @@ class BlindTest:
             self._next_trial(t_change)
             if not self.active():
                 return
-        self.trajectory.append((self.trial_i + 1, self.trial["target"], t, x, y, int(hand_detected)))
+        self.trajectory.append((self.trial_i + 1, self.trial["target"], t, x, y, int(hand_detected), extra))
         self.samples.append((t, x, y))
         self.hand.append(hand_detected)
         if math.hypot(x - self.trial["x"], y - self.trial["y"]) >= TARGET_RADIUS:
@@ -347,6 +353,7 @@ class BlindTest:
             "n_trials_total": len(self.trials),
             "session_duration": (t - self.t_start) if self.t_start is not None else 0.0,
             "timestamp": self.timestamp,
+            "setup": self.setup,
             "all": summarize(self.results, keys=TRIAL_KEYS),
             # Same statistics per target, over its repetitions
             "per_target": {str(k): summarize([r for r in self.results if r["target"] == k], keys=TRIAL_KEYS)
@@ -384,9 +391,9 @@ class BlindTest:
         if self.trajectory:
             with open(self.base + "_trajectory.csv", "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["trial", "target", "t", "x", "y", "hand_detected"])
-                w.writerows((i, k, f"{ts - self.t_start:.4f}", f"{x:.2f}", f"{y:.2f}", h)
-                            for i, k, ts, x, y, h in self.trajectory)
+                w.writerow(["trial", "target", "t", "x", "y", "hand_detected", *TRAJECTORY_EXTRA])
+                w.writerows((i, k, f"{ts - self.t_start:.4f}", f"{x:.2f}", f"{y:.2f}", h, *fmt_extra(extra))
+                            for i, k, ts, x, y, h, extra in self.trajectory)
         with open(self.base + "_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
@@ -477,7 +484,9 @@ def main() -> None:
     test = BlindTest(subject, args.test, trials)
     bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
+    test.setup = session_setup(calib_path, bomi_map, screen)
     cursor_filter = bomi.CursorFilter()
+    trace = bomi.CursorTrace(bomi_map)   # unclipped / not customized versions of the cursor, for the log
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas
     sx, sy = CANVAS_W / bomi.BASE_WIDTH, CANVAS_H / bomi.BASE_HEIGHT
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
@@ -486,12 +495,13 @@ def main() -> None:
     t_launch = time.time()
     try:
         while not test.end_reason:
-            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter,
+                                                                         crs_x, crs_y, trace)
             bomi.show_camera(frame, hand_detected)
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)
-            test.update(t, cx, cy, hand_detected)
+            test.update(t, cx, cy, hand_detected, extra_coordinates(screen, cx, cy, trace))
             waiting = test.t_start is None
             can_start = waiting and t - t_launch >= START_CURSOR_S
             message = "ENTER to start" if can_start else ""

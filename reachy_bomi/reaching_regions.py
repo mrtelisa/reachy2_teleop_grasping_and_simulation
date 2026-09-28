@@ -19,10 +19,11 @@ Sequence: config/cursor_regions.csv, one region per row, e.g.
 (any other file with --sequence). It is generated once if missing: every
 outer region N_REPETITIONS (12) times -> 96 targets, in seeded random order
 (all 8 once before any repeat, never the same twice in a row), a home before
-each.
+each and one after the last: the first home starts the session, then every
+target has its return to the home (96 out and back).
 
-Session: the whole sequence once (96 targets); it ends when the last target
-is reached (or on Q/ESC) and the results are saved. The protocol runs two
+Session: the whole sequence once (96 targets); it ends when the cursor is back
+in the home after the last target (or on Q/ESC) and the results are saved. The protocol runs two
 sessions, --phase pre (training before the blind test) and --phase post
 (training after it).
 
@@ -69,8 +70,18 @@ Results (--phase pre|post; a subject with previous sessions of the same phase
 gets _1, _2, ... appended):
   results_regions/<subject>_regions_<phase>_trials.csv       one row per goal
   results_regions/<subject>_regions_<phase>_blocks.csv       one row per block of 8 targets
-  results_regions/<subject>_regions_<phase>_trajectory.csv   every cursor sample (trial, t, x, y, cursor_visible)
+  results_regions/<subject>_regions_<phase>_trajectory.csv   every cursor sample (trial, t, x, y, cursor_visible,
+                                                             + TRAJECTORY_EXTRA, see below)
   results_regions/<subject>_regions_<phase>_summary.json     means (regions, returns, per region, per block), config
+Trajectory coordinates (x, y are the cursor in canvas px, clipped to the canvas,
+the ones every metric uses); TRAJECTORY_EXTRA, also filtered like the cursor:
+  x_screen, y_screen        the cursor in pixels of the monitor (the canvas is scaled
+                            and centred on it, "screen" in the summary)
+  x_unclipped, y_unclipped  the map in use, customization included, NOT clipped (canvas
+                            px, can be < 0 or > the canvas): where the hand points
+  x_base, y_base            the shared map WITHOUT the participant's customization
+                            (canvas px, clipped); empty if the map is not a customization of it
+The summary also stores the map used and its customization ("setup").
 A post session is compared with the subject's latest pre session: the
 differences (post - pre) are printed and stored in the summary.
 
@@ -146,6 +157,36 @@ TARGET = (0, 255, 255)   # target circle
 CURSOR = (int(0.4 * 255), int(0.65 * 255), int(0.19 * 255))   # markerlessBoMI CURSOR, RGB -> BGR
 
 
+TRAJECTORY_EXTRA = ("x_screen", "y_screen", "x_unclipped", "y_unclipped", "x_base", "y_base")
+
+
+def extra_coordinates(screen, cx: float, cy: float, trace: bomi.CursorTrace) -> tuple:
+    """The TRAJECTORY_EXTRA values of one sample (see the module docstring):
+    screen has .ox, .oy, .scale (canvas -> monitor), (cx, cy) is the cursor
+    on the canvas."""
+    sx, sy = CANVAS_W / bomi.BASE_WIDTH, CANVAS_H / bomi.BASE_HEIGHT
+    ux, uy = (trace.unclipped[0] * sx, trace.unclipped[1] * sy) if trace.unclipped else (None, None)
+    bx, by = ((min(max(trace.base[0] * sx, 0.0), CANVAS_W), min(max(trace.base[1] * sy, 0.0), CANVAS_H))
+              if trace.base else (None, None))
+    return screen.ox + cx * screen.scale, screen.oy + cy * screen.scale, ux, uy, bx, by
+
+
+def fmt_extra(values: tuple) -> list:
+    return ["" if v is None else f"{v:.2f}" for v in values]
+
+
+def session_setup(calib_path: str, bomi_map: bomi.BoMIMap, screen) -> dict:
+    """What the summary records about the map and the screen of a session."""
+    return {
+        "map": os.path.basename(calib_path),
+        "customization": bomi.customization_summary(bomi_map),
+        "screen": {"width": screen.w, "height": screen.h, "canvas_scale": screen.scale,
+                   "canvas_offset": [screen.ox, screen.oy]},
+        "map_space": [bomi.BASE_WIDTH, bomi.BASE_HEIGHT],
+        "canvas": [CANVAS_W, CANVAS_H],
+    }
+
+
 def region_of(x: float, y: float) -> int:
     """Region 1..9 of a canvas point (3 x 3 grid, row-major from the top-left)."""
     col = 0 if x < REGION_X[1] else 1 if x < REGION_X[2] else 2
@@ -216,7 +257,8 @@ def blind_metrics(samples: list, target_region: int, t_shown: float, t_enter: fl
 def generate_sequence(repetitions: int = N_REPETITIONS, seed: int = SEQUENCE_SEED) -> list:
     """[5, r1, 5, r2, 5, ...]: the 8 outer regions `repetitions` times in
     seeded random order (all of them once before any repeat, never the same
-    twice in a row), a home before each. Only used to create SEQUENCE_FILE once."""
+    twice in a row), a home before each and a final one, so that the last target
+    has its return too. Only used to create SEQUENCE_FILE once."""
     rng = np.random.default_rng(seed)
     outer = [r for r in range(1, 10) if r != HOME_REGION]
     order, last = [], None
@@ -229,7 +271,7 @@ def generate_sequence(repetitions: int = N_REPETITIONS, seed: int = SEQUENCE_SEE
     seq = []
     for r in order:
         seq += [HOME_REGION, r]
-    return seq
+    return seq + [HOME_REGION]
 
 
 def load_sequence(path: str = SEQUENCE_FILE) -> list:
@@ -258,12 +300,14 @@ def load_sequence(path: str = SEQUENCE_FILE) -> list:
 def build_trials(sequence: list) -> list:
     """One goal per region of the sequence: kind ("home" for region 5, "region"
     otherwise), region, target_number (the region goals counted 1..n; a home
-    takes the number of the region goal that follows it), x, y (goal centre:
-    the home, or the centre of the region)."""
+    takes the number of the region goal that follows it, the final return the
+    number of the last one), x, y (goal centre: the home, or the centre of the
+    region)."""
     trials, n_targets = [], 0
-    for r in sequence:
+    for i, r in enumerate(sequence):
         if r == HOME_REGION:
-            trials.append({"kind": "home", "region": r, "target_number": n_targets + 1,
+            followed = any(nxt != HOME_REGION for nxt in sequence[i + 1:])
+            trials.append({"kind": "home", "region": r, "target_number": n_targets + (1 if followed else 0),
                            "x": CANVAS_W / 2.0, "y": CANVAS_H / 2.0})
         else:
             n_targets += 1
@@ -308,7 +352,8 @@ class RegionsTest:
         self.phase = phase
         self.trials = trials
         self.results = []
-        self.trajectory = []   # every cursor sample: (trial, kind, region, t, x, y, cursor_visible)
+        self.trajectory = []   # every cursor sample: (trial, kind, region, t, x, y, cursor_visible, extra)
+        self.setup = {}        # map and screen of the session (session_setup), for the summary
 
         self.results_dir = results_dir
         os.makedirs(results_dir, exist_ok=True)
@@ -352,13 +397,14 @@ class RegionsTest:
         """The cursor is hidden for the first HIDDEN_S of a region goal."""
         return not (self.active() and self.trial["kind"] == "region" and t - self.t_shown < HIDDEN_S)
 
-    def update(self, t: float, x: float, y: float) -> None:
-        """One frame with the current (filtered) cursor position in canvas px."""
+    def update(self, t: float, x: float, y: float, extra: tuple = ()) -> None:
+        """One frame with the current (filtered) cursor position in canvas px;
+        extra = its TRAJECTORY_EXTRA values (logged only)."""
         if not self.active():
             return
         tr = self.trial
         self.trajectory.append((self.trial_i + 1, tr["kind"], tr["region"], t, x, y,
-                                int(self.cursor_visible(t))))
+                                int(self.cursor_visible(t)), extra))
         self.samples.append((t, x, y))
 
         if not inside_goal(tr, x, y):
@@ -435,6 +481,7 @@ class RegionsTest:
             # Timer of the session (what is on screen): first entry into the home -> last goal
             "time_total": self.elapsed(t),
             "timestamp": self.timestamp,
+            "setup": self.setup,
             # centre -> target region (what the test measures)
             "regions": summarize(targets, keys=REGION_KEYS),
             "homes": summarize(homes, keys=HOME_KEYS),      # region -> back to the centre
@@ -474,9 +521,9 @@ class RegionsTest:
         if self.trajectory:
             with open(self.base + "_trajectory.csv", "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["trial", "kind", "region", "t", "x", "y", "cursor_visible"])
-                w.writerows((i, k, reg, f"{ts - self.t0():.4f}", f"{x:.2f}", f"{y:.2f}", vis)
-                            for i, k, reg, ts, x, y, vis in self.trajectory)
+                w.writerow(["trial", "kind", "region", "t", "x", "y", "cursor_visible", *TRAJECTORY_EXTRA])
+                w.writerows((i, k, reg, f"{ts - self.t0():.4f}", f"{x:.2f}", f"{y:.2f}", vis, *fmt_extra(extra))
+                            for i, k, reg, ts, x, y, vis, extra in self.trajectory)
         with open(self.base + "_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
@@ -575,7 +622,9 @@ def main() -> None:
     test = RegionsTest(subject, args.phase, build_trials(sequence))
     bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
+    test.setup = session_setup(calib_path, bomi_map, screen)
     cursor_filter = bomi.CursorFilter()
+    trace = bomi.CursorTrace(bomi_map)   # unclipped / not customized versions of the cursor, for the log
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas
     sx, sy = CANVAS_W / bomi.BASE_WIDTH, CANVAS_H / bomi.BASE_HEIGHT
     crs_x, crs_y = bomi.BASE_WIDTH / 2.0, bomi.BASE_HEIGHT / 2.0
@@ -585,12 +634,13 @@ def main() -> None:
     test.start(time.time())
     try:
         while not test.end_reason:
-            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y)
+            frame, crs_x, crs_y, hand_detected = bomi.update_bomi_cursor(cap, landmarker, bomi_map, cursor_filter,
+                                                                         crs_x, crs_y, trace)
             bomi.show_camera(frame, hand_detected)
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)
-            test.update(t, cx, cy)
+            test.update(t, cx, cy, extra_coordinates(screen, cx, cy, trace))
             screen.draw(test, cx, cy, t, hand_detected)
             key = cv2.waitKey(1) & 0xFF
             if bomi._quit_requested(key, screen.window):

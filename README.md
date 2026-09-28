@@ -92,7 +92,7 @@ How a session runs:
 1. **Home**: the centre circle is shown. The **session timer starts the first time the cursor enters it**.
 2. **Region**: as soon as the home is reached, it disappears and the **yellow target circle at the centre of the region** is shown. For the first **1 s** (`HIDDEN_S`) the **cursor is not drawn**. The goal is to see whether the participant can reach the target from the learned map alone, without visual feedback. After that second the cursor reappears.
 3. Every goal, home or target, is reached when the cursor **stays inside its circle for 0.5 s** (`DWELL_S`, the same for both), whether the cursor is hidden or not. Leaving the circle restarts the count. A circle turns blue while the cursor is inside it (a target only once the cursor is visible). The home is then shown again for the return.
-4. The session ends when the last target is reached (the timer stops there), or on `Q`/`Esc`.
+4. The session ends when the cursor is back in the home after the last target (the timer stops there), or on `Q`/`Esc`: 96 targets, each with its return to the home.
 
 Results go to `results_regions/`. A subject with a previous session of the same phase gets `_1`, `_2`, ... appended to the file names.
 

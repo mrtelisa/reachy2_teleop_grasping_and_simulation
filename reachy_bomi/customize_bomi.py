@@ -20,12 +20,22 @@ Keys:
             calibrations/<id>_<date>_<time>.npz ('-' at the prompt cancels)
     q       quit without saving
 
+Every save also writes what was done to the map (see bomi.customization_summary):
+  calibrations/<id>_<date>_<time>_customization.json   the steps in order (rotation,
+      flip, scale, offset) and their net effect: rot_deg, scale, flip_x, offset_x/_y
+  calibrations/customizations.csv   one row per customized map in calibrations/
+      (every participant), rebuilt from the maps at every save or with --registry
+
 Usage:
     python3 customize_bomi.py [SUBJECT] [--base NAME] [--cam INDEX] [--model PATH]
+    python3 customize_bomi.py --registry     # only rebuild customizations.csv
 """
 
 import argparse
+import csv
+import json
 import os
+import re
 import sys
 
 import cv2
@@ -39,12 +49,16 @@ ROT_STEP_DEG = 5.0
 SCALE_STEP = 1.1     # multiplicative
 OFFSET_STEP_PX = 10.0
 
+REGISTRY_PATH = os.path.join(bomi.CALIB_DIR, "customizations.csv")
+REGISTRY_FIELDS = ("subject", "map", "saved", "base", "n_steps", "rot_deg", "scale", "flip_x",
+                   "offset_x", "offset_y", "steps")
+
 HELP_TEXT = (
     "[ ]=rotate  i/o=flip X/Y  -/+=scale  hjkl=offset  r=reset  s=save  q=quit"
 )
 
 
-def _prompt_and_save(bomi_map: bomi.BoMIMap, subject: str) -> bool:
+def _prompt_and_save(bomi_map: bomi.BoMIMap, subject: str, base_path: str) -> bool:
     """Asks the participant id (default: subject, if given on the command line)
     and saves the map as calibrations/<id>_<YYYYMMDD_HHMMSS>.npz, the file
     "--subject <id>" resolves to everywhere. Returns True once saved (False if
@@ -63,7 +77,69 @@ def _prompt_and_save(bomi_map: bomi.BoMIMap, subject: str) -> bool:
     os.makedirs(bomi.CALIB_DIR, exist_ok=True)
     bomi_map.save(path)
     print(f"Saved to {path}")
+    record = _customization_record(bomi_map, bomi._strip_npz(os.path.basename(path)), base_path)
+    with open(bomi._strip_npz(path) + "_customization.json", "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2)
+    print(f"  customization: {record['summary_text']}")
+    rebuild_registry()
     return True
+
+
+def _steps_text(steps) -> str:
+    """customize() calls -> 'rot +5; scale x1.10; flip X; offset +10,+0; ...'."""
+    if steps is None:
+        return "not recorded"
+    out = []
+    for st in steps:
+        if st["rot_deg"]:
+            out.append(f"rot {st['rot_deg']:+g}")
+        if st["gain_x"] < 0 or st["gain_y"] < 0:
+            out.append("flip " + "X" * (st["gain_x"] < 0) + "Y" * (st["gain_y"] < 0))
+        elif st["gain_x"] != 1.0 or st["gain_y"] != 1.0:
+            out.append(f"scale x{abs(st['gain_x']):.2f}")
+        if st["off_x"] or st["off_y"]:
+            out.append(f"offset {st['off_x']:+g},{st['off_y']:+g}")
+    return "; ".join(out) or "none"
+
+
+def _customization_record(bomi_map: bomi.BoMIMap, name: str, base_path: str) -> dict:
+    """What was done to base_path to get bomi_map (name = its map name)."""
+    base = bomi.BoMIMap()
+    base.load(base_path)
+    summary = bomi.customization_summary(bomi_map, base)
+    subject = re.sub(bomi._CUSTOM_TIMESTAMP_RE + "$", "", name)
+    stamp = name[len(subject) + 1:]
+    record = {"subject": subject, "map": name, "saved": stamp, "base": bomi._strip_npz(os.path.basename(base_path)),
+              **(summary or {"steps": bomi_map.customization})}
+    record["summary_text"] = (f"rotation {summary['rot_deg']:+.1f} deg, scale x{summary['scale']:.3f}, "
+                              f"flip X {'yes' if summary['flip_x'] else 'no'}, "
+                              f"offset ({summary['offset_x']:+.0f}, {summary['offset_y']:+.0f}) px"
+                              if summary else "not a customization of the base map")
+    record["steps_text"] = _steps_text(record["steps"])
+    return record
+
+
+def rebuild_registry() -> None:
+    """calibrations/customizations.csv: one row per customized map in
+    calibrations/ (every participant), vs the shared map."""
+    base_path = bomi._resolve_calib_path(bomi.SHARED_MAP_NAME)
+    if not os.path.exists(base_path):
+        print(f"[registry] no {base_path}: not rebuilt")
+        return
+    rows = []
+    for name in bomi._list_saved_maps():
+        if not bomi._is_custom_map_name(name):
+            continue
+        m = bomi.BoMIMap()
+        m.load(bomi._resolve_calib_path(name))
+        r = _customization_record(m, name, base_path)
+        rows.append({k: (round(r[k], 3) if isinstance(r.get(k), float) else r.get(k))
+                     for k in REGISTRY_FIELDS if k != "steps"} | {"steps": r["steps_text"]})
+    with open(REGISTRY_PATH, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=REGISTRY_FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"[registry] {len(rows)} customized maps -> {REGISTRY_PATH}")
 
 
 def _customize_and_save(cap, landmarker, calib_path: str, subject: str) -> None:
@@ -113,7 +189,7 @@ def _customize_and_save(cap, landmarker, calib_path: str, subject: str) -> None:
             bomi_map.load(calib_path)
             print("Reset to the original calibration.")
         elif key == ord('s'):
-            if _prompt_and_save(bomi_map, subject):
+            if _prompt_and_save(bomi_map, subject, calib_path):
                 return
         elif bomi._quit_requested(key, map_window):
             print("Closed without saving.")
@@ -132,7 +208,12 @@ def main() -> None:
     parser.add_argument("--cam", type=int, default=0, help="Webcam index (default: 0)")
     parser.add_argument("--model", default=bomi.DEFAULT_MODEL_PATH,
                         help="Path to the MediaPipe hand_landmarker.task model.")
+    parser.add_argument("--registry", action="store_true",
+                        help="Only rebuild calibrations/customizations.csv from the saved maps, then exit")
     cli_args = parser.parse_args()
+    if cli_args.registry:
+        rebuild_registry()
+        return
 
     calib_path = bomi._resolve_calib_path(cli_args.base)
     if not os.path.exists(calib_path):
