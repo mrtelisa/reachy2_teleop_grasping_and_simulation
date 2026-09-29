@@ -147,10 +147,10 @@ def main() -> None:
         landmarker_options = hand_landmarker.HandLandmarkerOptions(
             base_options=base_options.BaseOptions(model_asset_path=cli_args.model),
             running_mode=vision_task_running_mode.VisionTaskRunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=0.7,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            num_hands=bomi_teleop.LANDMARKER_NUM_HANDS,
+            min_hand_detection_confidence=bomi_teleop.LANDMARKER_MIN_DETECTION_CONFIDENCE,
+            min_hand_presence_confidence=bomi_teleop.LANDMARKER_MIN_PRESENCE_CONFIDENCE,
+            min_tracking_confidence=bomi_teleop.LANDMARKER_MIN_TRACKING_CONFIDENCE,
         )
         landmarker = hand_landmarker.HandLandmarker.create_from_options(landmarker_options)
 

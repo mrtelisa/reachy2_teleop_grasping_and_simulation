@@ -7,7 +7,7 @@ from typing import Callable
 import cv2
 from reachy2_sdk.media.camera import CameraView, DepthCamera
 
-STREAM_HZ = 12.0  # [Hz] frames requested from the robot (the camera itself runs faster)
+STREAM_HZ = 20.0  # [Hz] frames requested from the robot (the camera itself runs faster)
 
 
 def stream_blocking(

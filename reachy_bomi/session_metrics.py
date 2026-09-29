@@ -45,6 +45,21 @@ command), within each uninterrupted driving stretch:
                                        changes [bits] (as the steering entropy): 0 = predictable
 Manual counts, typed in by the experimenter at the end of the run ("manual"):
   n_collisions, n_drops_grasp, n_drops_transport, notes
+Session description (what the protocol asks to record for every session):
+  task, protocol_step                  TASK_NAME, run<N>
+  session_start/_end, test_start/_end  local time, ISO 8601 (session = launch -> robot off)
+  files                                this json, the csvs next to it, the BoMI map used
+  screen                               cursor canvas (size, origin, y axis, region grid, dead zone),
+                                       cursor map window and physical screen
+  mapping                              autoencoder map (file, hyperparameters, VAF), its
+                                       customization (steps, and the net affine vs the shared
+                                       map), cursor filter, cursor -> velocity, hand tracking
+  fps                                  webcam (nominal, resolution), control loop, robot camera stream
+  task_config                          dwell times, speeds, lidar distances, targets / timeout
+  n_trials_planned, n_trials_completed one trial = one object picked and placed
+  frames                               webcam frames during the test: n_frames, n_frames_lost
+                                       (read failures + skipped, estimated from the gaps at the
+                                       nominal fps), n_frames_no_hand, fps_mean (tracking loop)
 Kept from the previous version: path_length_<mode>, _navigation, _total,
 log_dimensionless_jerk (navigation), region_time_percent/_seconds (all the driving).
 
@@ -86,6 +101,12 @@ JERK_RESAMPLE_HZ = 20.0   # odometry is sampled at the control loop rate (PUBLIS
 REGIONS = tuple(range(1, 10))
 # Longer gaps between region ticks = control loop not running (preview, dialog): a new driving stretch
 REGION_TICK_MAX_GAP_S = 0.5
+# Same for the webcam frames: a longer gap is the tracking loop paused (arm moving,
+# capture), not frames lost
+FRAME_MAX_GAP_S = REGION_TICK_MAX_GAP_S
+
+TASK_NAME = "reachy2_bomi_pick_and_place"   # drive to a table, grasp an object, carry it and place it
+N_TRIALS_PER_RUN = 1                          # one object per run
 # A region visit shorter than this is jitter on a border, not a command (reaching_regions.MIN_VISIT_S)
 MIN_COMMAND_S = 0.25
 STOP_REGION = 5
@@ -245,6 +266,20 @@ class SessionMetrics:
         self.path_odometry_csv = base + "_odometry.csv"
         self.path_regions_csv = base + "_regions.csv"
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.t_session_start = time.time()
+        self.t_session_end = None
+        # Filled in by reachy_control.py: {"screen": ..., "mapping": ..., "fps": ..., "task_config": ...,
+        # "calibration_map": file name}
+        self.setup = {}
+        self.camera_fps = None   # nominal webcam fps, for the lost-frame estimate
+
+        self.n_frames = 0
+        self.n_frames_read_failed = 0
+        self.n_frames_skipped = 0
+        self.n_frames_no_hand = 0
+        self.tracking_time = 0.0   # [s], sum of the frame-to-frame gaps up to FRAME_MAX_GAP_S
+        self.n_frame_gaps = 0
+        self._last_frame_t = None
 
         self.t_test_start = None
         self.t_test_end = None
@@ -329,6 +364,28 @@ class SessionMetrics:
         if self.t_test_end is None:
             self.t_test_end = time.time()
             self.end_reason = reason
+
+    # --- webcam frames ---
+    def frame(self, read_ok: bool, hand_detected: bool, now: float = None) -> None:
+        """Every webcam frame of the tracking loop (bomi_teleop.frame_listener),
+        counted during the test only."""
+        if self.t_test_start is None or self.t_test_end is not None:
+            return
+        if not read_ok:
+            self.n_frames_read_failed += 1
+            return
+        now = time.time() if now is None else now
+        self.n_frames += 1
+        if not hand_detected:
+            self.n_frames_no_hand += 1
+        if self._last_frame_t is not None:
+            gap = now - self._last_frame_t
+            if 0.0 < gap <= FRAME_MAX_GAP_S:
+                self.tracking_time += gap
+                self.n_frame_gaps += 1
+                if self.camera_fps:
+                    self.n_frames_skipped += max(0, round(gap * self.camera_fps) - 1)
+        self._last_frame_t = now
 
     # --- odometry ---
     def sample(self, odom: dict, mode: str) -> None:
@@ -424,10 +481,39 @@ class SessionMetrics:
         dwell_removed = sum(sum(sec for _, sec in region_visits(s["ticks"]))
                             - sum(sec for _, sec in region_visits(s["ticks"], s["dwell"]))
                             for s in self._stretches)
+        iso = lambda t: datetime.datetime.fromtimestamp(t).isoformat(timespec="seconds") if t else None
         return {
             "subject": self.subject,
+            "task": TASK_NAME,
+            "protocol_step": f"run{self.run}",
             "run": self.run,
             "timestamp": self.timestamp,
+            "session_start": iso(self.t_session_start),
+            "session_end": iso(self.t_session_end or time.time()),
+            "test_start": iso(self.t_test_start),
+            "test_end": iso(self.t_test_end),
+            "files": {
+                "session": os.path.basename(self.path_json),
+                "odometry_csv": os.path.basename(self.path_odometry_csv),
+                "regions_csv": os.path.basename(self.path_regions_csv),
+                "calibration_map": self.setup.get("calibration_map"),
+            },
+            "screen": self.setup.get("screen"),
+            "mapping": self.setup.get("mapping"),
+            "fps": self.setup.get("fps"),
+            "task_config": self.setup.get("task_config"),
+            "n_trials_planned": N_TRIALS_PER_RUN,
+            "n_trials_completed": len(self.objects_moved),
+            "frames": {
+                "n_frames": self.n_frames,
+                "n_frames_lost": self.n_frames_read_failed + self.n_frames_skipped,
+                "n_frames_read_failed": self.n_frames_read_failed,
+                "n_frames_skipped": self.n_frames_skipped if self.camera_fps else None,
+                "n_frames_no_hand": self.n_frames_no_hand,
+                "no_hand_percent": (100.0 * self.n_frames_no_hand / self.n_frames) if self.n_frames else None,
+                "fps_mean": (self.n_frame_gaps / self.tracking_time) if self.tracking_time > 0 else None,
+                "tracking_time": self.tracking_time,
+            },
             "end_reason": self.end_reason,
             "success": len(self.objects_moved) > 0,
             "test_duration": (t_end - self.t_test_start) if self.t_test_start else None,
@@ -464,7 +550,7 @@ class SessionMetrics:
             "odometry_file": os.path.basename(self.path_odometry_csv),
             "regions_file": os.path.basename(self.path_regions_csv),
             "config": {"min_command_s": MIN_COMMAND_S, "dwell_s": self.dwell_seconds,
-                       "region_tick_max_gap_s": REGION_TICK_MAX_GAP_S},
+                       "region_tick_max_gap_s": REGION_TICK_MAX_GAP_S, "frame_max_gap_s": FRAME_MAX_GAP_S},
         }
 
     def ask_manual(self) -> None:
@@ -490,6 +576,8 @@ class SessionMetrics:
             self.manual["notes"] = ""
 
     def save(self) -> dict:
+        if self.t_session_end is None:   # first save, at the end of the run (the second one adds the manual counts)
+            self.t_session_end = time.time()
         s = self.summary()
         with open(self.path_json, "w", encoding="utf-8") as f:
             json.dump(s, f, indent=2)

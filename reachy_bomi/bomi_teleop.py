@@ -38,6 +38,10 @@ LIDAR_CRITICAL_DISTANCE_SLOWDOWN = 0.10  # [m], when approaching the object
 # --- Virtual screen dimensions ---
 BASE_WIDTH = 2550
 BASE_HEIGHT = 1500
+# Origin top-left, x to the right, y DOWN (image convention): cursor up = forward
+# 3x3 region grid: column edges (x) and row edges (y) in screen pixels
+REGION_X_EDGES = (847, 1697)
+REGION_Y_EDGES = (497, 997)
 
 # MIN_* let the wheels overcome their own resistance
 MIN_LINEAR = 0.2      # [m/s]
@@ -48,6 +52,12 @@ MAX_ANGULAR = 1.1     # [rad/s]
 DEAD_ZONE_PX = 200    # pixel radius around screen center before motion starts
 
 PUBLISH_HZ = 20  # [Hz] speed-command rate — comfortably under the mobile base's 0.2s command duration
+
+# MediaPipe HandLandmarker options (reachy_control.py, customize_bomi.py, webcam_mediapipe.py)
+LANDMARKER_NUM_HANDS = 1
+LANDMARKER_MIN_DETECTION_CONFIDENCE = 0.7
+LANDMARKER_MIN_PRESENCE_CONFIDENCE = 0.5
+LANDMARKER_MIN_TRACKING_CONFIDENCE = 0.5
 
 DEFAULT_MODEL_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "hand_landmarker.task"
@@ -216,6 +226,7 @@ class BoMIMap:
         self._A = np.eye(2)     # latent -> screen affine map (starts diagonal = plain scale)
         self._b = np.zeros(2)
         self.metrics = {}       # training report of fit() (VAF, latent variance, sample counts)
+        self.customization = [] # customize() calls since fit(), in order (saved with the map)
         self.fitted = False
 
     def fit(self, samples, test_split: float = AE_TEST_SPLIT) -> dict:
@@ -319,6 +330,15 @@ class BoMIMap:
 
         self._A = gain_rot @ self._A
         self._b = gain_rot @ (self._b - center) + center + np.array([off_x, off_y])
+        if self.customization is None:   # loaded from a map saved without the log
+            self.customization = []
+        self.customization.append({"rot_deg": rot_deg, "gain_x": gain_x, "gain_y": gain_y,
+                                   "off_x": off_x, "off_y": off_y})
+
+    @property
+    def affine(self) -> tuple:
+        """(A, b): latent code -> screen pixels."""
+        return self._A.copy(), self._b.copy()
 
     def save_map_bomi(self, path: str) -> None:
         if not self.fitted:
@@ -331,6 +351,7 @@ class BoMIMap:
             A=self._A,
             b=self._b,
             metrics=json.dumps(self.metrics),
+            customization=json.dumps(self.customization),
         )
 
     def load_map_bomi(self, path: str) -> None:
@@ -341,6 +362,8 @@ class BoMIMap:
         self._A = data["A"]
         self._b = data["b"]
         self.metrics = json.loads(str(data["metrics"])) if "metrics" in data else {}
+        # None: map saved before the customization steps were recorded
+        self.customization = json.loads(str(data["customization"])) if "customization" in data else None
         self.fitted = True
 
 
@@ -350,16 +373,16 @@ def check_region_cursor(crs_x: float, crs_y: float) -> int:
         1 | 2 | 3
         4 | 5 | 6
         7 | 8 | 9"""
-    if crs_x < 847:
+    if crs_x < REGION_X_EDGES[0]:
         col = 0
-    elif crs_x <= 1697:
+    elif crs_x <= REGION_X_EDGES[1]:
         col = 1
     else:
         col = 2
 
-    if crs_y < 497:
+    if crs_y < REGION_Y_EDGES[0]:
         row = 0
-    elif crs_y <= 997:
+    elif crs_y <= REGION_Y_EDGES[1]:
         row = 1
     else:
         row = 2
@@ -446,8 +469,8 @@ def draw_cursor_map(crs_x: float, crs_y: float, region: int, message: str,
     sx = map_width / BASE_WIDTH
     sy = map_height / BASE_HEIGHT
 
-    x1, x2 = int(847 * sx), int(1697 * sx)
-    y1, y2 = int(497 * sy), int(997 * sy)
+    x1, x2 = (int(x * sx) for x in REGION_X_EDGES)
+    y1, y2 = (int(y * sy) for y in REGION_Y_EDGES)
     for x in (x1, x2):
         cv2.line(canvas, (x, 0), (x, map_height), (90, 90, 90), 1)
     for y in (y1, y2):
@@ -463,6 +486,11 @@ def draw_cursor_map(crs_x: float, crs_y: float, region: int, message: str,
     return canvas
 
 
+# Called as frame_listener(read_ok, hand_detected) on every update_bomi_cursor()
+# frame, if set (reachy_control.py: the session metrics' frame counts)
+frame_listener = None
+
+
 def update_bomi_cursor(cap, landmarker, bomi_map: BoMIMap, cursor_filter: CursorFilter, crs_x: float, crs_y: float):
     """One tracking iteration: read a frame, run the landmarker, map and filter.
     Returns (frame with landmarks, crs_x, crs_y, hand_detected); the cursor is
@@ -470,12 +498,16 @@ def update_bomi_cursor(cap, landmarker, bomi_map: BoMIMap, cursor_filter: Cursor
     can stop instead of coasting on a stale position."""
     ret, frame = cap.read()
     if not ret:
+        if frame_listener is not None:
+            frame_listener(False, False)
         return None, crs_x, crs_y, False
 
     frame = cv2.flip(frame, 1)
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
     results = landmarker.detect_for_video(mp_image, int(time.time() * 1000))
+    if frame_listener is not None:
+        frame_listener(True, bool(results.hand_landmarks))
 
     if not results.hand_landmarks:
         return frame, crs_x, crs_y, False

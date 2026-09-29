@@ -8,6 +8,8 @@ log/
 *.npz
 *.npy
 *.png
+*.csv
+*.json
 # Session metrics of reachy_control.py
 results_robot/
 results_blind/

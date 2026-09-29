@@ -62,8 +62,9 @@ import bomi_teleop
 import display
 import graphs
 import session_metrics
+import stream
 
-DEFAULT_ROBOT_IP = "192.168.1.60"
+DEFAULT_ROBOT_IP = "10.186.13.12"
 
 SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds
 MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # driving dwells: -> pre-grasp pose, -> object selection, -> placement grid, Repositioning -> back
@@ -93,6 +94,82 @@ def _sample_odometry(mobile_base, mode: str) -> None:
         _metrics.sample(mobile_base.get_current_odometry(degrees=False), mode)
     except Exception as exc:
         print(f"[metrics] odometry read failed: {exc}")
+
+
+def _session_setup(cli_args, calib_path: str, bomi_map, cap) -> dict:
+    """What the session json records about the setup of this run (screen,
+    mapping, fps, task parameters), see session_metrics.py."""
+    A, b = bomi_map.affine
+    # Net customization of the participant's map vs the shared one: screen = M @ screen_shared + t
+    vs_shared = None
+    shared_path = bomi_teleop.resolve_calib_path(bomi_teleop.SHARED_MAP_NAME)
+    if os.path.exists(shared_path) and os.path.abspath(shared_path) != os.path.abspath(calib_path):
+        shared = bomi_teleop.BoMIMap()
+        shared.load_map_bomi(shared_path)
+        A_s, b_s = shared.affine
+        M = A @ np.linalg.inv(A_s)
+        vs_shared = {"M": M.tolist(), "t": (b - M @ b_s).tolist()}
+    screen = display.screen()
+    return {
+        "calibration_map": os.path.basename(calib_path),
+        "screen": {
+            "canvas_width": bomi_teleop.BASE_WIDTH, "canvas_height": bomi_teleop.BASE_HEIGHT,
+            "origin": "top-left", "x_axis": "right", "y_axis": "down (cursor up = forward)",
+            "regions": "3x3 grid, 1 2 3 / 4 5 6 / 7 8 9, 5 = stop",
+            "region_x_edges": list(bomi_teleop.REGION_X_EDGES),
+            "region_y_edges": list(bomi_teleop.REGION_Y_EDGES),
+            "dead_zone_px": bomi_teleop.DEAD_ZONE_PX,
+            "cursor_map_window": {"width": 510, "height": 300, "position": list(bomi_teleop.MAP_WINDOW_POS)},
+            "display": ({"output": screen[0], "width": screen[3], "height": screen[4]} if screen else None),
+        },
+        "mapping": {
+            "type": "autoencoder (markerlessBoMI), 42 hand features (21 landmarks x, y, mirrored image) -> 2D cursor",
+            "map_file": os.path.basename(calib_path),
+            "shared_map": bomi_teleop.SHARED_MAP_NAME,
+            "ae": {"hidden_units": bomi_teleop.AE_HIDDEN_UNITS, "activation": bomi_teleop.AE_ACTIVATION,
+                   "latent_dim": bomi_teleop.AE_LATENT_DIM, "epochs": bomi_teleop.AE_N_STEPS,
+                   "learning_rate": bomi_teleop.AE_LR, "test_split": bomi_teleop.AE_TEST_SPLIT,
+                   "seed": bomi_teleop.AE_SEED, "calibration_duration_s": bomi_teleop.CALIB_DURATION_S},
+            "ae_metrics": bomi_map.metrics,
+            # rotation / gain (negative = flip) / offset steps of customize_bomi.py, in order;
+            # None = map saved before they were recorded (vs_shared still holds their net effect)
+            "customization_steps": bomi_map.customization,
+            "affine": {"A": A.tolist(), "b": b.tolist()},
+            "vs_shared": vs_shared,
+            "filter": {"type": "butterworth low-pass", "order": bomi_teleop.CursorFilter.ORDER,
+                       "cutoff_hz": bomi_teleop.CursorFilter.CUTOFF_HZ,
+                       "sample_hz": bomi_teleop.CursorFilter.SAMPLE_HZ},
+            "velocity": {"min_linear": bomi_teleop.MIN_LINEAR, "max_linear": bomi_teleop.MAX_LINEAR,
+                         "min_angular": bomi_teleop.MIN_ANGULAR, "max_angular": bomi_teleop.MAX_ANGULAR,
+                         "dead_zone_px": bomi_teleop.DEAD_ZONE_PX,
+                         "reduced_speed_factor": HALVED_SPEED_FACTOR,
+                         "repositioning": "min_linear / min_angular"},
+            "hand_tracking": {"model": os.path.basename(cli_args.model),
+                              "num_hands": bomi_teleop.LANDMARKER_NUM_HANDS,
+                              "min_detection_confidence": bomi_teleop.LANDMARKER_MIN_DETECTION_CONFIDENCE,
+                              "min_presence_confidence": bomi_teleop.LANDMARKER_MIN_PRESENCE_CONFIDENCE,
+                              "min_tracking_confidence": bomi_teleop.LANDMARKER_MIN_TRACKING_CONFIDENCE},
+        },
+        "fps": {
+            "webcam_index": cli_args.cam,
+            "webcam_nominal": cap.get(cv2.CAP_PROP_FPS) or None,
+            "webcam_resolution": [int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))],
+            "control_loop_hz": bomi_teleop.PUBLISH_HZ,
+            "robot_camera_stream_hz": stream.STREAM_HZ,
+        },
+        "task_config": {
+            "robot_ip": cli_args.robot_ip,
+            "targets": "none on screen: free navigation to the object table, then to the placement table",
+            "timeout": None,
+            "mode_switch_dwell_s": MODE_SWITCH_HOLD_SECONDS,
+            "preview_dwell_s": SELECTION_HOLD_SECONDS,
+            "hover_select_dwell_s": reachy_selection.HOVER_HOLD_SECONDS,
+            "yolo_model": os.path.basename(cli_args.yolo_model), "yolo_confidence": cli_args.conf,
+            "lidar_slowdown_m": bomi_teleop.LIDAR_SLOWDOWN_DISTANCE,
+            "lidar_critical_m": bomi_teleop.LIDAR_CRITICAL_DISTANCE,
+            "lidar_critical_pre_grasp_m": bomi_teleop.LIDAR_CRITICAL_DISTANCE_SLOWDOWN,
+        },
+    }
 
 
 # --- Windows and camera streaming functions ---
@@ -807,10 +884,10 @@ def main() -> None:
         landmarker_options = hand_landmarker.HandLandmarkerOptions(
             base_options=base_options.BaseOptions(model_asset_path=cli_args.model),
             running_mode=vision_task_running_mode.VisionTaskRunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=0.7,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            num_hands=bomi_teleop.LANDMARKER_NUM_HANDS,
+            min_hand_detection_confidence=bomi_teleop.LANDMARKER_MIN_DETECTION_CONFIDENCE,
+            min_hand_presence_confidence=bomi_teleop.LANDMARKER_MIN_PRESENCE_CONFIDENCE,
+            min_tracking_confidence=bomi_teleop.LANDMARKER_MIN_TRACKING_CONFIDENCE,
         )
         landmarker = hand_landmarker.HandLandmarker.create_from_options(landmarker_options)
 
@@ -818,6 +895,9 @@ def main() -> None:
         bomi_map.load_map_bomi(calib_path)
         print(f"Loaded calibration map from {calib_path}")
         bomi_map.print_metrics()
+        _metrics.setup = _session_setup(cli_args, calib_path, bomi_map, cap)
+        _metrics.camera_fps = _metrics.setup["fps"]["webcam_nominal"]
+        bomi_teleop.frame_listener = _metrics.frame
         bring_window_to_front(bomi_teleop.MAP_WINDOW_NAME, bomi_teleop.MAP_WINDOW_POS)
         start_camera_viewer(cli_args.robot_ip)
         reachy.head.rotate_by(pitch=-STARTUP_GAZE_PITCH_DEG, yaw=0, roll=0, wait=False)  # look down
