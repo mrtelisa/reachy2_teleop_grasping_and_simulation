@@ -126,6 +126,7 @@ def _session_setup(cli_args, calib_path: str, bomi_map, cap) -> dict:
             "type": "autoencoder (markerlessBoMI), 42 hand features (21 landmarks x, y, mirrored image) -> 2D cursor",
             "map_file": os.path.basename(calib_path),
             "shared_map": bomi_teleop.SHARED_MAP_NAME,
+            "calibration_samples": bomi_teleop.SHARED_MAP_NAME + bomi_teleop.SAMPLES_SUFFIX,
             "ae": {"hidden_units": bomi_teleop.AE_HIDDEN_UNITS, "activation": bomi_teleop.AE_ACTIVATION,
                    "latent_dim": bomi_teleop.AE_LATENT_DIM, "epochs": bomi_teleop.AE_N_STEPS,
                    "learning_rate": bomi_teleop.AE_LR, "test_split": bomi_teleop.AE_TEST_SPLIT,
@@ -159,8 +160,6 @@ def _session_setup(cli_args, calib_path: str, bomi_map, cap) -> dict:
         },
         "task_config": {
             "robot_ip": cli_args.robot_ip,
-            "targets": "none on screen: free navigation to the object table, then to the placement table",
-            "timeout": None,
             "mode_switch_dwell_s": MODE_SWITCH_HOLD_SECONDS,
             "preview_dwell_s": SELECTION_HOLD_SECONDS,
             "hover_select_dwell_s": reachy_selection.HOVER_HOLD_SECONDS,
@@ -170,6 +169,51 @@ def _session_setup(cli_args, calib_path: str, bomi_map, cap) -> dict:
             "lidar_critical_pre_grasp_m": bomi_teleop.LIDAR_CRITICAL_DISTANCE_SLOWDOWN,
         },
     }
+
+
+# Windows the BoMI cursor is drawn in (cursor map, object selection / placement grid, Yes/No dialog)
+CURSOR_WINDOWS = (bomi_teleop.MAP_WINDOW_NAME, reachy_detection.CAM_WINDOW_NAME, reachy_selection.CONFIRM_WINDOW_NAME)
+_last_cursor = None   # (crs_x, crs_y) of the last webcam frame, for _on_cursor_drawn
+
+
+def _on_cursor_frame(read_ok: bool, hand_detected: bool, crs_x: float, crs_y: float) -> None:
+    """bomi_teleop.frame_listener: one row of the session's cursor file."""
+    global _last_cursor
+    _last_cursor = (crs_x, crs_y)
+    tr = bomi_teleop.cursor_trace
+    raw = tr.raw if hand_detected else None
+    latent = tr.latent if hand_detected else None
+    at_border = None if raw is None else int(not (0.0 <= raw[0] <= bomi_teleop.BASE_WIDTH
+                                                  and 0.0 <= raw[1] <= bomi_teleop.BASE_HEIGHT))
+    _metrics.frame(read_ok, hand_detected, cursor={
+        "hand_detected": int(hand_detected),
+        "latent_1": latent and latent[0], "latent_2": latent and latent[1],
+        "raw_x": raw and raw[0], "raw_y": raw and raw[1],
+        "cursor_x": crs_x, "cursor_y": crs_y, "at_border": at_border,
+        "region": bomi_teleop.check_region_cursor(crs_x, crs_y),
+        "x_unclipped": tr.unclipped and tr.unclipped[0], "y_unclipped": tr.unclipped and tr.unclipped[1],
+        "x_base": tr.base and tr.base[0], "y_base": tr.base and tr.base[1],
+    })
+
+
+def _on_cursor_drawn(window_name: str, image_shape) -> None:
+    """display.imshow_listener: the last frame's cursor has just been drawn in
+    window_name; its position on the monitor, from the window's image
+    rectangle (the image keeps its aspect ratio in it, map_bomi_to_frame scales
+    the cursor onto the image)."""
+    if window_name not in CURSOR_WINDOWS or _last_cursor is None or image_shape is None:
+        return
+    try:
+        rx, ry, rw, rh = cv2.getWindowImageRect(window_name)
+    except cv2.error:
+        return
+    ih, iw = image_shape[:2]
+    if rw <= 0 or rh <= 0 or iw <= 0 or ih <= 0:
+        return
+    scale = min(rw / iw, rh / ih)
+    ox, oy = rx + (rw - iw * scale) / 2.0, ry + (rh - ih * scale) / 2.0
+    _metrics.cursor_on_screen(window_name, ox + _last_cursor[0] / bomi_teleop.BASE_WIDTH * iw * scale,
+                              oy + _last_cursor[1] / bomi_teleop.BASE_HEIGHT * ih * scale)
 
 
 # --- Windows and camera streaming functions ---
@@ -897,7 +941,9 @@ def main() -> None:
         bomi_map.print_metrics()
         _metrics.setup = _session_setup(cli_args, calib_path, bomi_map, cap)
         _metrics.camera_fps = _metrics.setup["fps"]["webcam_nominal"]
-        bomi_teleop.frame_listener = _metrics.frame
+        bomi_teleop.cursor_trace = bomi_teleop.CursorTrace(bomi_map)
+        bomi_teleop.frame_listener = _on_cursor_frame
+        display.imshow_listener = _on_cursor_drawn
         bring_window_to_front(bomi_teleop.MAP_WINDOW_NAME, bomi_teleop.MAP_WINDOW_POS)
         start_camera_viewer(cli_args.robot_ip)
         reachy.head.rotate_by(pitch=-STARTUP_GAZE_PITCH_DEG, yaw=0, roll=0, wait=False)  # look down

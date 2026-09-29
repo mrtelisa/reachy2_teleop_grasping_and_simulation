@@ -154,10 +154,17 @@ def _named_window_on_screen(winname, flags=cv2.WINDOW_AUTOSIZE):
         place(winname)
 
 
+# If set, called as imshow_listener(window_name, image_shape) after every cv2.imshow
+# (reachy_control.py: where the cursor has just been drawn on the screen)
+imshow_listener = None
+
+
 def _imshow_on_screen(winname, mat):
     _imshow(winname, mat)
     if winname not in _placed:
         place(winname)
+    if imshow_listener is not None:
+        imshow_listener(winname, getattr(mat, "shape", None))
 
 
 def _destroy_window_on_screen(winname):

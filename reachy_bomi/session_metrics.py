@@ -55,7 +55,7 @@ Session description (what the protocol asks to record for every session):
                                        customization (steps, and the net affine vs the shared
                                        map), cursor filter, cursor -> velocity, hand tracking
   fps                                  webcam (nominal, resolution), control loop, robot camera stream
-  task_config                          dwell times, speeds, lidar distances, targets / timeout
+  task_config                          dwell times, YOLO, lidar distances (no on-screen targets, no timeout)
   n_trials_planned, n_trials_completed one trial = one object picked and placed
   frames                               webcam frames during the test: n_frames, n_frames_lost
                                        (read failures + skipped, estimated from the gaps at the
@@ -64,6 +64,21 @@ Kept from the previous version: path_length_<mode>, _navigation, _total,
 log_dimensionless_jerk (navigation), region_time_percent/_seconds (all the driving).
 
 Files next to the json:
+  <subject>_run<N>_cursor.csv     every webcam frame of the test (all phases), CURSOR_COLUMNS:
+                                  frame_id, t_test, phase (the task phase, PHASES), view (window the
+                                  cursor was drawn in: cursor map, object selection / placement
+                                  grid, Yes/No dialog; empty if none), hand_detected, latent_1/_2
+                                  (autoencoder outputs, before the screen scaling and the
+                                  customization), raw_x/_y (the whole map, neither clipped nor
+                                  filtered), cursor_x/_y (the cursor the system uses: clipped,
+                                  filtered, held while the hand is lost), at_border (raw outside the
+                                  map space), region (of cursor), x/y_unclipped (the customized map
+                                  not clipped, filtered like the cursor), x/y_base (the shared map
+                                  WITHOUT the customization, clipped and filtered), x/y_screen (the
+                                  cursor in desktop pixels of the monitor, from the window's image
+                                  rectangle reported by OpenCV). Map space = BASE_WIDTH x BASE_HEIGHT
+                                  of bomi_teleop.py (2550 x 1500, origin top-left, y down);
+                                  latent, raw, at_border empty without a hand
   <subject>_run<N>_odometry.csv   every odometry sample taken while driving (control-loop rate,
                                   PUBLISH_HZ = 20 Hz): t (unix), t_test (s since test start), x, y [m],
                                   theta [rad], vx, vy [m/s], vtheta [rad/s], mode
@@ -104,6 +119,12 @@ REGION_TICK_MAX_GAP_S = 0.5
 # Same for the webcam frames: a longer gap is the tracking loop paused (arm moving,
 # capture), not frames lost
 FRAME_MAX_GAP_S = REGION_TICK_MAX_GAP_S
+
+CURSOR_COLUMNS = ("frame_id", "t_test", "phase", "view", "hand_detected", "latent_1", "latent_2",
+                  "raw_x", "raw_y", "cursor_x", "cursor_y", "at_border", "region",
+                  "x_unclipped", "y_unclipped", "x_base", "y_base", "x_screen", "y_screen")
+# The screen position of a frame's cursor is taken from the window drawn within this long after the frame
+CURSOR_DRAW_MAX_S = 0.2
 
 TASK_NAME = "reachy2_bomi_pick_and_place"   # drive to a table, grasp an object, carry it and place it
 N_TRIALS_PER_RUN = 1                          # one object per run
@@ -265,6 +286,7 @@ class SessionMetrics:
         self.path_json = base + "_session.json"
         self.path_odometry_csv = base + "_odometry.csv"
         self.path_regions_csv = base + "_regions.csv"
+        self.path_cursor_csv = base + "_cursor.csv"
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.t_session_start = time.time()
         self.t_session_end = None
@@ -280,6 +302,8 @@ class SessionMetrics:
         self.tracking_time = 0.0   # [s], sum of the frame-to-frame gaps up to FRAME_MAX_GAP_S
         self.n_frame_gaps = 0
         self._last_frame_t = None
+        self._cursor_rows = []     # CURSOR_COLUMNS dicts, one per frame of the test
+        self._cursor_t = None      # time of the last row, while its screen position is still missing
 
         self.t_test_start = None
         self.t_test_end = None
@@ -366,15 +390,21 @@ class SessionMetrics:
             self.end_reason = reason
 
     # --- webcam frames ---
-    def frame(self, read_ok: bool, hand_detected: bool, now: float = None) -> None:
+    def frame(self, read_ok: bool, hand_detected: bool, now: float = None, cursor: dict = None) -> None:
         """Every webcam frame of the tracking loop (bomi_teleop.frame_listener),
-        counted during the test only."""
+        counted during the test only. cursor: the CURSOR_COLUMNS values of the
+        frame from hand_detected to y_base, logged in the cursor file."""
         if self.t_test_start is None or self.t_test_end is not None:
             return
         if not read_ok:
             self.n_frames_read_failed += 1
             return
         now = time.time() if now is None else now
+        if cursor is not None:
+            self._cursor_rows.append({"frame_id": len(self._cursor_rows), "t_test": now - self.t_test_start,
+                                      "phase": self.current_phase(), "view": "", **cursor,
+                                      "x_screen": None, "y_screen": None})
+            self._cursor_t = now
         self.n_frames += 1
         if not hand_detected:
             self.n_frames_no_hand += 1
@@ -386,6 +416,23 @@ class SessionMetrics:
                 if self.camera_fps:
                     self.n_frames_skipped += max(0, round(gap * self.camera_fps) - 1)
         self._last_frame_t = now
+
+    def cursor_on_screen(self, view: str, x: float, y: float, now: float = None) -> None:
+        """The last frame's cursor has been drawn in window `view`, at (x, y) on
+        the monitor (only the first drawing right after the frame counts)."""
+        now = time.time() if now is None else now
+        if self._cursor_t is None or now - self._cursor_t > CURSOR_DRAW_MAX_S:
+            return
+        self._cursor_rows[-1].update(view=view, x_screen=x, y_screen=y)
+        self._cursor_t = None
+
+    def current_phase(self) -> str:
+        """The task phase (PHASES) the test is in: the last one whose start event happened."""
+        phase = None
+        for i, p in enumerate(PHASES):
+            if EVENTS[i] in self.events:
+                phase = p
+        return phase
 
     # --- odometry ---
     def sample(self, odom: dict, mode: str) -> None:
@@ -496,6 +543,7 @@ class SessionMetrics:
                 "session": os.path.basename(self.path_json),
                 "odometry_csv": os.path.basename(self.path_odometry_csv),
                 "regions_csv": os.path.basename(self.path_regions_csv),
+                "cursor_csv": os.path.basename(self.path_cursor_csv),
                 "calibration_map": self.setup.get("calibration_map"),
             },
             "screen": self.setup.get("screen"),
@@ -530,6 +578,7 @@ class SessionMetrics:
             "n_objects_moved": len(self.objects_moved),
             "objects_moved": list(self.objects_moved),
             "manual": dict(self.manual),
+            "experimenter_notes": self.manual.get("notes"),   # typed in at the end (ask_manual)
             # Outbound vs return, the two legs of the same route (compared run 1 vs run 2)
             "path_length_outbound": self.path[MODE_MAX],
             "path_length_return": self.path[MODE_TRANSPORT],
@@ -591,6 +640,12 @@ class SessionMetrics:
             t0 = self.t_test_start or 0.0
             for i, st in enumerate(self._stretches, start=1):
                 w.writerows((f"{t - t0:.4f}", i, st["mode"], r, st["dwell"]) for t, r in st["ticks"])
+        with open(self.path_cursor_csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=CURSOR_COLUMNS)
+            w.writeheader()
+            w.writerows({k: ("" if v is None else f"{v:.6f}" if k.startswith("latent") else
+                             f"{v:.4f}" if k == "t_test" else f"{v:.2f}" if isinstance(v, float) else v)
+                         for k, v in r.items()} for r in self._cursor_rows)
         self.saved = True
         print(f"[metrics] saved {self.path_json}, {os.path.basename(self.path_odometry_csv)} "
               f"({len(self._odometry_log)} odometry samples) and {os.path.basename(self.path_regions_csv)}")

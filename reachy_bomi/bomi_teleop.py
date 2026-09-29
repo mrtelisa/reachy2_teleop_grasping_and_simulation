@@ -311,13 +311,26 @@ class BoMIMap:
 
     def transform(self, features: np.ndarray) -> tuple:
         """Landmarks -> (crs_x, crs_y) in pixels, clipped to the screen."""
+        return self.to_screen(self.latent(features))
+
+    def latent(self, features: np.ndarray) -> np.ndarray:
+        """Encoder forward pass: hand features -> 2D latent code (before A, b)."""
         h = np.tanh(np.dot(features, self._w1) + self._b1)
         h = np.tanh(np.dot(h, self._w2) + self._b2)
-        cu = np.dot(h, self._w3) + self._b3   # latent code = raw cursor
-        cu = self._A @ cu + self._b           # onto the screen
-        crs_x = float(np.clip(cu[0], 0, BASE_WIDTH))
-        crs_y = float(np.clip(cu[1], 0, BASE_HEIGHT))
-        return crs_x, crs_y
+        return np.dot(h, self._w3) + self._b3   # latent code = raw cursor
+
+    def to_screen(self, cu: np.ndarray, clip: bool = True) -> tuple:
+        """Latent code -> (crs_x, crs_y) in pixels (A, b: onto the screen +
+        customization), clipped to the screen unless clip=False."""
+        cu = self._A @ cu + self._b
+        if not clip:
+            return float(cu[0]), float(cu[1])
+        return float(np.clip(cu[0], 0, BASE_WIDTH)), float(np.clip(cu[1], 0, BASE_HEIGHT))
+
+    def same_encoder(self, other: "BoMIMap") -> bool:
+        """True if other has the same encoder weights (a customization of the same map)."""
+        return all(np.array_equal(getattr(self, k), getattr(other, k))
+                   for k in ("_w1", "_b1", "_w2", "_b2", "_w3", "_b3"))
 
     def customize(self, rot_deg: float = 0.0, gain_x: float = 1.0, gain_y: float = 1.0,
                   off_x: float = 0.0, off_y: float = 0.0) -> None:
@@ -486,8 +499,41 @@ def draw_cursor_map(crs_x: float, crs_y: float, region: int, message: str,
     return canvas
 
 
-# Called as frame_listener(read_ok, hand_detected) on every update_bomi_cursor()
-# frame, if set (reachy_control.py: the session metrics' frame counts)
+class CursorTrace:
+    """What the logs record of every frame besides the cursor: 'latent' (the 2
+    autoencoder outputs, before A, b), 'raw' (the map in use, customization
+    included, neither clipped nor filtered), 'unclipped' (the same, filtered
+    like the cursor: where the cursor would be without the screen edges) and
+    'base' (the base map, default the shared one, WITHOUT the customization,
+    clipped and filtered like the cursor). Screen pixels (BASE_WIDTH x
+    BASE_HEIGHT). latent/raw are the last detected hand's; unclipped/base
+    hold, as the cursor does. base is None if the map is not a customization
+    of the base map. Set it as cursor_trace: update_bomi_cursor updates it."""
+
+    def __init__(self, bomi_map: BoMIMap, base_map: BoMIMap = None) -> None:
+        if base_map is None:
+            path = resolve_calib_path(SHARED_MAP_NAME)
+            if os.path.exists(path):
+                base_map = BoMIMap()
+                base_map.load_map_bomi(path)
+        self.bomi_map = bomi_map
+        self.base_map = base_map if base_map is not None and bomi_map.same_encoder(base_map) else None
+        self._filter_unclipped = CursorFilter()
+        self._filter_base = CursorFilter()
+        self.latent = self.raw = self.unclipped = self.base = None
+
+    def update(self, cu: np.ndarray) -> None:
+        self.latent = (float(cu[0]), float(cu[1]))
+        self.raw = self.bomi_map.to_screen(cu, clip=False)
+        self.unclipped = self._filter_unclipped.update(*self.raw)
+        if self.base_map is not None:
+            self.base = self._filter_base.update(*self.base_map.to_screen(cu))
+
+
+# If set (reachy_control.py, for the session metrics): cursor_trace is updated
+# by every update_bomi_cursor() frame, then frame_listener(read_ok,
+# hand_detected, crs_x, crs_y) is called with the resulting cursor
+cursor_trace = None
 frame_listener = None
 
 
@@ -499,23 +545,27 @@ def update_bomi_cursor(cap, landmarker, bomi_map: BoMIMap, cursor_filter: Cursor
     ret, frame = cap.read()
     if not ret:
         if frame_listener is not None:
-            frame_listener(False, False)
+            frame_listener(False, False, crs_x, crs_y)
         return None, crs_x, crs_y, False
 
     frame = cv2.flip(frame, 1)
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
     results = landmarker.detect_for_video(mp_image, int(time.time() * 1000))
-    if frame_listener is not None:
-        frame_listener(True, bool(results.hand_landmarks))
 
     if not results.hand_landmarks:
+        if frame_listener is not None:
+            frame_listener(True, False, crs_x, crs_y)
         return frame, crs_x, crs_y, False
 
     hl = results.hand_landmarks[0]
     _draw_hand_landmarks(frame, hl)
-    crs_x, crs_y = bomi_map.transform(_extract_hand_features(hl))
-    crs_x, crs_y = cursor_filter.update(crs_x, crs_y)
+    cu = bomi_map.latent(_extract_hand_features(hl))
+    crs_x, crs_y = cursor_filter.update(*bomi_map.to_screen(cu))
+    if cursor_trace is not None:
+        cursor_trace.update(cu)
+    if frame_listener is not None:
+        frame_listener(True, True, crs_x, crs_y)
     return frame, crs_x, crs_y, True
 
 
