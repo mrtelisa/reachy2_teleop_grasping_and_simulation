@@ -622,7 +622,10 @@ class CursorTrace:
     be); 'base' = the base map (default: the shared one) without the
     customization, clipped as the cursor. Screen pixels (BASE_WIDTH x
     BASE_HEIGHT); None until the first detected hand (base: None if the map
-    is not a customization of the base map). Pass it to update_bomi_cursor."""
+    is not a customization of the base map). Pass it to update_bomi_cursor.
+    It also keeps, for the raw logs, the last detected hand's 'latent' code
+    (the 2 autoencoder outputs, before A, b) and 'raw' cursor (the map in use,
+    customization included, neither clipped nor filtered, screen pixels)."""
 
     def __init__(self, bomi_map: BoMIMap, base_map: BoMIMap = None) -> None:
         if base_map is None:
@@ -636,24 +639,35 @@ class CursorTrace:
         self._filter_base = CursorFilter()
         self.unclipped = None
         self.base = None
+        self.latent = None
+        self.raw = None
 
     def update(self, cu: np.ndarray) -> None:
+        self.latent = (float(cu[0]), float(cu[1]))
+        self.raw = self.bomi_map.to_screen(cu, clip=False)
         self.unclipped = self._filter_unclipped.update(*self.bomi_map.to_screen(cu, clip=False))
         if self.base_map is not None:
             self.base = self._filter_base.update(*self.base_map.to_screen(cu))
 
 
 # --- Hand tracking ---
+# MediaPipe hand landmarker options (create_hand_landmarker)
+LANDMARKER_NUM_HANDS = 1
+LANDMARKER_MIN_DETECTION_CONFIDENCE = 0.7
+LANDMARKER_MIN_PRESENCE_CONFIDENCE = 0.5
+LANDMARKER_MIN_TRACKING_CONFIDENCE = 0.5
+
+
 def create_hand_landmarker(model_path: str = DEFAULT_MODEL_PATH):
     """MediaPipe Tasks hand landmarker in VIDEO mode, one hand."""
     return hand_landmarker.HandLandmarker.create_from_options(
         hand_landmarker.HandLandmarkerOptions(
             base_options=base_options.BaseOptions(model_asset_path=model_path),
             running_mode=vision_task_running_mode.VisionTaskRunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=0.7,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            num_hands=LANDMARKER_NUM_HANDS,
+            min_hand_detection_confidence=LANDMARKER_MIN_DETECTION_CONFIDENCE,
+            min_hand_presence_confidence=LANDMARKER_MIN_PRESENCE_CONFIDENCE,
+            min_tracking_confidence=LANDMARKER_MIN_TRACKING_CONFIDENCE,
         )
     )
 

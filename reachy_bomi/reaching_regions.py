@@ -72,6 +72,7 @@ gets _1, _2, ... appended):
   results_regions/<subject>_regions_<phase>_blocks.csv       one row per block of 8 targets
   results_regions/<subject>_regions_<phase>_trajectory.csv   every cursor sample (trial, t, x, y, cursor_visible,
                                                              + TRAJECTORY_EXTRA, see below)
+  results_regions/<subject>_regions_<phase>_raw.csv          every webcam frame of the block (RAW_COLUMNS, see below)
   results_regions/<subject>_regions_<phase>_summary.json     means (regions, returns, per region, per block), config
 Trajectory coordinates (x, y are the cursor in canvas px, clipped to the canvas,
 the ones every metric uses); TRAJECTORY_EXTRA, also filtered like the cursor:
@@ -82,6 +83,35 @@ the ones every metric uses); TRAJECTORY_EXTRA, also filtered like the cursor:
   x_base, y_base            the shared map WITHOUT the participant's customization
                             (canvas px, clipped); empty if the map is not a customization of it
 The summary also stores the map used and its customization ("setup").
+
+Raw file, results_regions/<subject>_regions_<phase>_raw.csv: one row per webcam
+frame from the start to the end of the block (coordinates in canvas px, origin
+top-left, y down), RAW_COLUMNS:
+  frame_id, time      0.. every frame / s since the block start
+  trial               1..96, one per out-and-back pair: changes at the target_on of the
+                      outward goal and stays the same during the return; 0 = the first
+                      home, before target 1
+  target_id           region of the target (1..9 without 5) outward, 0 on the return (home)
+  target_x, target_y  centre of the current goal (the target outward, the home on the return)
+  start_x, start_y    raw position in the frame the goal appears (in the home outward, in
+                      the target on the return; the last valid one if the hand was not
+                      detected there), repeated over the goal
+  comeback            0 outward, 1 return (the first home too)
+  cursor_visible      0 for the first HIDDEN_S of the outward goal, else 1
+  in_target           1 if cursor is in the current goal circle (distance <= radius),
+                      every frame, the cursor hidden or not
+  hand_detected, latent_1, latent_2, raw_x, raw_y, cursor_x, cursor_y, at_border, region
+                      as in reaching_blind.py: latent = the 2 autoencoder outputs before the
+                      screen scaling and the customization; raw = the whole map, neither
+                      clipped nor filtered (latent, raw, at_border empty without a hand);
+                      cursor = what the system uses (held while the hand is lost);
+                      region of cursor on the REGION_X / REGION_Y grid
+  event               block_start, target_on, cursor_visible, enter_target, exit_target,
+                      target_acquired, home_on, home_acquired, tracking_lost,
+                      tracking_found, block_end (';'-separated in the same frame);
+                      enter/exit_target refer to the current goal, home included
+  + TRAJECTORY_EXTRA  x_screen, y_screen, x_unclipped, y_unclipped, x_base, y_base (as in
+                      the trajectory file: filtered like the cursor, held while the hand is lost)
 A post session is compared with the subject's latest pre session: the
 differences (post - pre) are printed and stored in the summary.
 
@@ -146,6 +176,7 @@ MAIN_KEYS = ("reach_time", "normalized_path_length", "initial_direction_error", 
              "n_entries", "dwell_time")
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_regions")
+TASK_NAME = "reaching_regions_training"
 WINDOW = "BoMI - Reaching (regions)"
 
 # Colours (BGR)
@@ -175,16 +206,184 @@ def fmt_extra(values: tuple) -> list:
     return ["" if v is None else f"{v:.2f}" for v in values]
 
 
-def session_setup(calib_path: str, bomi_map: bomi.BoMIMap, screen) -> dict:
-    """What the summary records about the map and the screen of a session."""
+def _num(v, decimals: int = 2) -> str:
+    return "" if v is None else f"{v:.{decimals}f}"
+
+
+RAW_COLUMNS = ("frame_id", "time", "trial", "target_id", "target_x", "target_y", "start_x", "start_y",
+               "comeback", "cursor_visible", "in_target", "hand_detected", "latent_1", "latent_2",
+               "raw_x", "raw_y", "cursor_x", "cursor_y", "at_border", "region", "event") + TRAJECTORY_EXTRA
+
+
+class RawLog:
+    """Per-frame raw log of a block, shared by this training and the blind test
+    (reaching_blind.py): frame_id, time, start_x/_y, the cursor columns and
+    the events; the task adds its own columns (trial, target, ...).
+    Per frame: track() on every frame (before the block too), then row()
+    while it returns True. Events are queued with event() and go on the next
+    row; new_goal() makes the next row take start_x/_y."""
+
+    def __init__(self, columns: tuple) -> None:
+        self.columns = columns
+        self.rows = []
+        self.events = []
+        self.t_start = None
+        self.closed = False
+        self.start = None         # (start_x, start_y) of the current goal
+        self._need_start = False
+        self._last_raw = None     # last valid raw position
+        self._last_hand = None    # hand_detected of the previous frame
+        self.n_read_failed = 0    # webcam frames that could not be read during the block
+        self._times = []          # time of every row, for the frame statistics
+
+    def begin(self, t: float) -> None:
+        self.t_start = t
+        self.event("block_start")
+
+    def event(self, name: str) -> None:
+        self.events.append(name)
+
+    def new_goal(self) -> None:
+        self._need_start = True
+
+    def track(self, hand_detected: bool, raw: tuple) -> bool:
+        """Tracking events and last valid raw position; True if this frame
+        belongs to the block (then call row())."""
+        if raw is not None:
+            self._last_raw = raw
+        in_block = self.t_start is not None and not self.closed
+        if in_block and self._last_hand is not None and hand_detected != self._last_hand:
+            self.event("tracking_found" if hand_detected else "tracking_lost")
+        self._last_hand = hand_detected
+        if in_block and self._need_start:
+            self.start = self._last_raw   # this frame's raw if the hand is tracked, else the last valid one
+            self._need_start = False
+        return in_block
+
+    def read_failed(self) -> None:
+        """A webcam frame that could not be read (no row)."""
+        if self.t_start is not None and not self.closed:
+            self.n_read_failed += 1
+
+    def frame_stats(self, camera_fps: float = None) -> dict:
+        """Frames of the block: n_frames (rows), n_frames_lost (frames the webcam
+        delivered but the loop did not process, estimated from the gaps between
+        rows at the nominal camera_fps; the read failures if it is unknown),
+        n_frames_no_hand, fps_mean (rows / block duration)."""
+        n = len(self.rows)
+        gaps = np.diff(self._times) if n > 1 else np.array([])
+        skipped = int(sum(max(0, round(g * camera_fps) - 1) for g in gaps)) if camera_fps else None
+        no_hand = sum(1 for r in self.rows if r["hand_detected"] == 0)
+        duration = self._times[-1] - self._times[0] if n > 1 else 0.0
+        return {
+            "n_frames": n,
+            "n_frames_lost": skipped if skipped is not None else self.n_read_failed,
+            "n_frames_read_failed": self.n_read_failed,
+            "n_frames_no_hand": no_hand,
+            "no_hand_percent": 100.0 * no_hand / n if n else None,
+            "fps_mean": (n - 1) / duration if duration > 0 else None,
+            "max_frame_gap_s": float(gaps.max()) if gaps.size else None,
+            "lost_estimate": ("gaps between rows at the nominal webcam fps" if camera_fps
+                              else "read failures only (nominal fps unknown)"),
+        }
+
+    def row(self, t: float, fields: dict, cx: float, cy: float, hand_detected: bool, latent: tuple, raw: tuple,
+            extra: tuple, last: bool = False) -> None:
+        """One row: the task's fields + the cursor columns; last=True closes the log."""
+        if not hand_detected:
+            latent = raw = None
+        at_border = "" if raw is None else int(not (0.0 <= raw[0] <= CANVAS_W and 0.0 <= raw[1] <= CANVAS_H))
+        row = {"frame_id": len(self.rows), "time": f"{t - self.t_start:.4f}", **fields,
+               "start_x": _num(self.start and self.start[0]), "start_y": _num(self.start and self.start[1]),
+               "hand_detected": int(hand_detected),
+               "latent_1": _num(latent and latent[0], 6), "latent_2": _num(latent and latent[1], 6),
+               "raw_x": _num(raw and raw[0]), "raw_y": _num(raw and raw[1]),
+               "cursor_x": _num(cx), "cursor_y": _num(cy), "at_border": at_border, "region": region_of(cx, cy),
+               "event": ";".join(self.events), **dict(zip(TRAJECTORY_EXTRA, fmt_extra(extra)))}
+        self.rows.append(row)
+        self._times.append(t)
+        self.events = []
+        self.closed = self.closed or last
+
+    def finish(self) -> None:
+        """Events still queued (abort, unread last frame) and block_end go on the last row."""
+        if self.rows and not self.closed:
+            events = self.events + ([] if "block_end" in self.events else ["block_end"])
+            self.rows[-1]["event"] = ";".join(filter(None, [self.rows[-1]["event"]] + events))
+        self.closed = True
+
+    def write(self, path: str) -> None:
+        if not self.rows:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=self.columns)
+            w.writeheader()
+            w.writerows(self.rows)
+
+
+def session_setup(calib_path: str, bomi_map: bomi.BoMIMap, screen, cap=None, cam_index: int = None,
+                  model_path: str = None) -> dict:
+    """What the summary records about the map, the screen and the webcam of a
+    session ("setup")."""
+    fps = cap.get(cv2.CAP_PROP_FPS) if cap is not None else None
     return {
         "map": os.path.basename(calib_path),
         "customization": bomi.customization_summary(bomi_map),
-        "screen": {"width": screen.w, "height": screen.h, "canvas_scale": screen.scale,
-                   "canvas_offset": [screen.ox, screen.oy]},
-        "map_space": [bomi.BASE_WIDTH, bomi.BASE_HEIGHT],
-        "canvas": [CANVAS_W, CANVAS_H],
+        "screen": {
+            "canvas": [CANVAS_W, CANVAS_H], "origin": "top-left", "x_axis": "right", "y_axis": "down",
+            "region_grid": "3 x 3, regions 1 2 3 / 4 5 6 / 7 8 9 from the top-left",
+            "region_x_edges": list(REGION_X), "region_y_edges": list(REGION_Y),
+            "monitor": [screen.w, screen.h], "canvas_scale": screen.scale,
+            "canvas_offset": [screen.ox, screen.oy],   # monitor px = offset + canvas px * scale
+            "map_space": [bomi.BASE_WIDTH, bomi.BASE_HEIGHT],   # map px -> canvas px: * canvas / map_space
+        },
+        "mapping": {
+            "type": "autoencoder (markerlessBoMI): 21 hand landmarks (x, y) -> 2 latent units -> cursor",
+            "map_file": os.path.basename(calib_path),
+            "shared_map": bomi.SHARED_MAP_NAME,
+            "calibration_samples": bomi.SHARED_MAP_NAME + bomi.SAMPLES_SUFFIX,
+            "ae": {"hidden_units": bomi.AE_HIDDEN_UNITS, "activation": bomi.AE_ACTIVATION,
+                   "latent_dim": bomi.AE_LATENT_DIM, "epochs": bomi.AE_N_STEPS, "learning_rate": bomi.AE_LR,
+                   "test_split": bomi.AE_TEST_SPLIT, "seed": bomi.AE_SEED,
+                   "calibration_duration_s": bomi.CALIB_DURATION_S},
+            "ae_metrics": bomi_map.metrics,
+            "affine": {k: v.tolist() for k, v in zip(("A", "b"), bomi_map.affine)},
+            "customization": "see setup.customization (steps, rot_deg, scale, flip_x, offset)",
+            "filter": {"type": "butterworth low-pass", "order": bomi.CursorFilter.ORDER,
+                       "cutoff_hz": bomi.CURSOR_FILTER_CUTOFF_HZ, "sample_hz": bomi.CURSOR_FILTER_HZ,
+                       "applied": "after the clip to the map space"},
+            "hand_tracking": {"model": os.path.basename(model_path) if model_path else None,
+                              "num_hands": bomi.LANDMARKER_NUM_HANDS,
+                              "min_detection_confidence": bomi.LANDMARKER_MIN_DETECTION_CONFIDENCE,
+                              "min_presence_confidence": bomi.LANDMARKER_MIN_PRESENCE_CONFIDENCE,
+                              "min_tracking_confidence": bomi.LANDMARKER_MIN_TRACKING_CONFIDENCE},
+        },
+        "fps": {
+            "webcam_index": cam_index,
+            "webcam_nominal": fps or None,
+            "webcam_resolution": ([int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))]
+                                  if cap is not None else None),
+            "filter_assumed_hz": bomi.CURSOR_FILTER_HZ,
+        },
     }
+
+
+def iso_time(t: float) -> str:
+    return datetime.datetime.fromtimestamp(t).isoformat(timespec="seconds") if t is not None else None
+
+
+def ask_notes(summary_path: str) -> None:
+    """Asks the experimenter's notes on the terminal and adds them to the
+    summary json (experimenter_notes)."""
+    try:
+        notes = input("\nExperimenter notes (ENTER = none): ").strip()
+    except EOFError:
+        notes = ""
+    with open(summary_path, encoding="utf-8") as f:
+        summary = json.load(f)
+    summary["experimenter_notes"] = notes
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
 
 
 def region_of(x: float, y: float) -> int:
@@ -354,10 +553,17 @@ class RegionsTest:
         self.results = []
         self.trajectory = []   # every cursor sample: (trial, kind, region, t, x, y, cursor_visible, extra)
         self.setup = {}        # map and screen of the session (session_setup), for the summary
+        self.raw = RawLog(RAW_COLUMNS)
+        # Raw log: trial (out-and-back pair) of every goal, and the goal of the rows
+        # (kept after the last one ends); in_target / cursor_visible of the previous row
+        self._pair = [sum(1 for g in trials[:i + 1] if g["kind"] == "region") for i in range(len(trials))]
+        self._raw_goal = None
+        self._raw_prev = None   # (goal index, in_target, cursor_visible)
 
         self.results_dir = results_dir
         os.makedirs(results_dir, exist_ok=True)
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.t_launch = time.time()
         self.base = os.path.join(results_dir, session_name(subject, f"regions_{phase}", results_dir))
 
         # Session/trial state (times are time.time())
@@ -376,14 +582,19 @@ class RegionsTest:
     # --- trial flow ---
     def start(self, t: float) -> None:
         self.t_start = t
+        self.raw.begin(t)
         self._next_trial(t)
 
     def _next_trial(self, t: float) -> None:
         self.trial_i += 1
         if self.trial_i >= len(self.trials):
             self.end_reason = "completed"
+            self.raw.event("block_end")
             return
         self.trial = self.trials[self.trial_i]
+        self.raw.event("home_on" if self.trial["kind"] == "home" else "target_on")
+        self.raw.new_goal()
+        self._raw_goal = self.trial_i
         self.t_shown = t
         self.t_enter = None
         self.t_first_enter = None
@@ -432,7 +643,33 @@ class RegionsTest:
         """Time origin for the logs: session start if it has begun, else the launch."""
         return self.t_session0 if self.t_session0 is not None else self.t_start
 
+    def log_frame(self, t: float, cx: float, cy: float, hand_detected: bool, latent: tuple, raw: tuple,
+                  extra: tuple = ()) -> None:
+        """One row of the raw log (see the module docstring), after update() of
+        the same frame: (cx, cy) the cursor on the canvas, latent the 2
+        autoencoder outputs and raw the unclipped, unfiltered cursor in canvas
+        px (both None without a hand), extra its TRAJECTORY_EXTRA values."""
+        if not self.raw.track(hand_detected, raw if hand_detected else None) or self._raw_goal is None:
+            return
+        i = self._raw_goal
+        goal = self.trials[i]
+        outward = goal["kind"] == "region"
+        in_target = math.hypot(cx - goal["x"], cy - goal["y"]) <= (TARGET_RADIUS if outward else HOME_RADIUS)
+        visible = not (outward and t - self.t_shown < HIDDEN_S) if i == self.trial_i else True
+        same = self._raw_prev is not None and self._raw_prev[0] == i
+        if in_target != (same and self._raw_prev[1]):
+            self.raw.event("enter_target" if in_target else "exit_target")
+        if same and visible and not self._raw_prev[2]:
+            self.raw.event("cursor_visible")
+        self._raw_prev = (i, in_target, visible)
+        self.raw.row(t, {"trial": self._pair[i], "target_id": goal["region"] if outward else 0,
+                         "target_x": _num(goal["x"]), "target_y": _num(goal["y"]),
+                         "comeback": int(not outward), "cursor_visible": int(visible),
+                         "in_target": int(in_target)},
+                     cx, cy, hand_detected, latent, raw, extra, last=bool(self.end_reason))
+
     def _end_trial(self, t: float) -> None:
+        self.raw.event("home_acquired" if self.trial["kind"] == "home" else "target_acquired")
         self._record_trial(t, success=True, reason="reached")
         r = self.results[-1]
         if self.trial["kind"] == "region":
@@ -474,8 +711,25 @@ class RegionsTest:
         targets = [r for r in self.results if r["kind"] == "region"]
         homes = [r for r in self.results if r["kind"] == "home"]
         blocks = block_summaries(targets, BLOCK_SIZE, keys=REGION_KEYS)
+        # A pair is completed when its return home is reached (every home but the first, goal 1)
+        pairs_done = sum(1 for r in self.results if r["kind"] == "home" and r["success"] and r["trial"] > 1)
+        name = os.path.basename(self.base)
         summary = {
-            "subject": self.subject, "phase": self.phase, "end_reason": reason,
+            "subject": self.subject,
+            "task": TASK_NAME,
+            "protocol_step": f"training_{self.phase}",
+            "phase": self.phase, "end_reason": reason,
+            "session_start": iso_time(self.t_launch),
+            "block_start": iso_time(self.t_start),       # regions shown
+            "timer_start": iso_time(self.t_session0),    # first entry into the home
+            "block_end": iso_time(t),
+            "files": {k: name + suffix for k, suffix in (
+                ("trials", "_trials.csv"), ("blocks", "_blocks.csv"), ("trajectory", "_trajectory.csv"),
+                ("raw", "_raw.csv"), ("summary", "_summary.json"))} | {"calibration_map": self.setup.get("map")},
+            "n_trials_completed": pairs_done,   # out-and-back pairs: target reached and back in the home
+            "n_targets_reached": sum(1 for r in self.results if r["kind"] == "region" and r["success"]),
+            "frames": self.raw.frame_stats((self.setup.get("fps") or {}).get("webcam_nominal")),
+            "experimenter_notes": None,   # asked at the end (ask_notes)
             "n_trials_total": len(self.trials),
             "n_targets_total": sum(1 for tr in self.trials if tr["kind"] == "region"),
             # Timer of the session (what is on screen): first entry into the home -> last goal
@@ -500,6 +754,15 @@ class RegionsTest:
                 "region_sequence": [tr["region"] for tr in self.trials],
                 "dwell_s": DWELL_S, "hidden_s": HIDDEN_S, "min_visit_s": MIN_VISIT_S,
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
+                "region_x_edges": list(REGION_X), "region_y_edges": list(REGION_Y),
+                "timeout": None,   # no timeout: every goal stays until reached
+                "sequence_file": self.setup.get("sequence_file"),
+                "sequence_rule": (f"every outer region {N_REPETITIONS} times in seeded random order (seed "
+                                  f"{SEQUENCE_SEED}): all 8 once before any repeat, never the same twice in a "
+                                  "row; a home before each target and one after the last"),
+                "first_target_rule": ("the session starts with the home (region 5); the first target appears "
+                                      "when the cursor has stayed in the home for dwell_s"),
+                "raw_columns": list(RAW_COLUMNS),
             },
         }
         if self.phase == "post":
@@ -524,6 +787,8 @@ class RegionsTest:
                 w.writerow(["trial", "kind", "region", "t", "x", "y", "cursor_visible", *TRAJECTORY_EXTRA])
                 w.writerows((i, k, reg, f"{ts - self.t0():.4f}", f"{x:.2f}", f"{y:.2f}", vis, *fmt_extra(extra))
                             for i, k, reg, ts, x, y, vis, extra in self.trajectory)
+        self.raw.finish()
+        self.raw.write(self.base + "_raw.csv")
         with open(self.base + "_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
@@ -622,7 +887,8 @@ def main() -> None:
     test = RegionsTest(subject, args.phase, build_trials(sequence))
     bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
-    test.setup = session_setup(calib_path, bomi_map, screen)
+    test.setup = session_setup(calib_path, bomi_map, screen, cap, args.cam, args.model)
+    test.setup["sequence_file"] = os.path.basename(args.sequence)
     cursor_filter = bomi.CursorFilter()
     trace = bomi.CursorTrace(bomi_map)   # unclipped / not customized versions of the cursor, for the log
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas
@@ -640,7 +906,13 @@ def main() -> None:
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)
-            test.update(t, cx, cy, extra_coordinates(screen, cx, cy, trace))
+            extra = extra_coordinates(screen, cx, cy, trace)
+            test.update(t, cx, cy, extra)
+            if frame is not None:   # a frame that could not be read is not a frame of the raw log
+                test.log_frame(t, cx, cy, hand_detected, trace.latent,
+                               trace.raw and (trace.raw[0] * sx, trace.raw[1] * sy), extra)
+            else:
+                test.raw.read_failed()
             screen.draw(test, cx, cy, t, hand_detected)
             key = cv2.waitKey(1) & 0xFF
             if bomi._quit_requested(key, screen.window):
@@ -670,7 +942,8 @@ def main() -> None:
                       f"delta {fmt(c['delta'], ''):>8s}")
     elif args.phase == "post":
         print(f"\n  no pre session of '{subject}' in {RESULTS_DIR}: nothing to compare")
-    print(f"  results: {test.base}_trials.csv / _blocks.csv / _trajectory.csv / _summary.json")
+    print(f"  results: {test.base}_trials.csv / _blocks.csv / _trajectory.csv / _raw.csv / _summary.json")
+    ask_notes(test.base + "_summary.json")
 
 
 if __name__ == "__main__":

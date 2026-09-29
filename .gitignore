@@ -8,6 +8,8 @@ log/
 *.npz
 *.npy
 *.png
+*.csv
+*.json
 # Test outputs (reaching_regions.py, reaching_blind.py) and free exploration bags
 results_regions/
 results_blind/

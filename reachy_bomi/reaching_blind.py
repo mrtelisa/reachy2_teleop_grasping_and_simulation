@@ -68,7 +68,32 @@ _2, ... appended):
                                                         + x_screen, y_screen, x_unclipped, y_unclipped, x_base, y_base:
                                                         see reaching_regions.py); the summary also stores the map
                                                         used and its customization ("setup")
+  results_blind/<subject>_blind_test<N>_raw.csv          every webcam frame of the block, see RAW_COLUMNS below
   results_blind/<subject>_blind_test<N>_summary.json     means (all, per target, per block), config
+Raw file (one row per webcam frame from ENTER to the end; coordinates in canvas px,
+the 1200 x 650 canvas of the targets, origin top-left, y down):
+  frame_id            0 at the first frame of the block, +1 every frame
+  time                s since the block start (ENTER)
+  trial               1..12, changes in the frame of the new target (event target_on)
+  target_id           the target's region (1..9)
+  target_x, target_y  centre of the target
+  start_x, start_y    raw position in the target_on frame (the last valid one if the hand
+                      was not detected there), repeated over the trial
+  hand_detected       1 if the hand was tracked in this frame
+  latent_1, latent_2  the 2 autoencoder outputs of this frame, before the screen scaling and
+                      the customization (empty without a hand)
+  raw_x, raw_y        cursor after the whole map (autoencoder + customization: gain, offset,
+                      rotation), neither clipped nor filtered: can be < 0 or > the canvas
+                      (empty without a hand)
+  cursor_x, cursor_y  the cursor the system uses (clipped, filtered; held at its last
+                      position while the hand is not tracked)
+  at_border           1 if raw is outside the canvas on at least one axis (empty without a hand)
+  region              region 1..9 of cursor: columns x < 400 | < 800 | >= 800, rows
+                      y < 216.7 | < 433.3 | >= 433.3 (REGION_X, REGION_Y of reaching_regions.py)
+  event               block_start, target_on, timeout, tracking_lost, tracking_found,
+                      block_end; ';'-separated when several fall in the same frame
+  + x_screen, y_screen, x_unclipped, y_unclipped, x_base, y_base   as in the trajectory
+                      file (filtered like the cursor, held while the hand is lost)
 Test N is compared with the subject's latest session of every earlier test
 (1..N-1): the main metrics of each and the differences (test N - test k) are
 printed and stored in the summary (comparison_with_previous).
@@ -93,8 +118,12 @@ import numpy as np
 import bomi
 from reaching_metrics import METRIC_KEYS, block_summaries, compute_trial_metrics, summarize
 import reaching_regions
-from reaching_regions import (CANVAS_H, CANVAS_W, DWELL_S, TRAJECTORY_EXTRA, extra_coordinates, fmt_extra,
-                              latest_summary, region_of, session_name, session_setup)
+from reaching_regions import (CANVAS_H, CANVAS_W, DWELL_S, TRAJECTORY_EXTRA, RawLog, ask_notes, extra_coordinates,
+                              fmt_extra, iso_time, latest_summary, region_of, session_name, session_setup)
+
+RAW_COLUMNS = ("frame_id", "time", "trial", "target_id", "target_x", "target_y", "start_x", "start_y",
+               "hand_detected", "latent_1", "latent_2", "raw_x", "raw_y", "cursor_x", "cursor_y",
+               "at_border", "region", "event") + TRAJECTORY_EXTRA
 
 # --- Targets: the reaching_regions.py targets of these regions (same canvas, position and radius) ---
 TARGET_REGIONS = (2, 4, 5, 9)
@@ -128,6 +157,7 @@ MAIN_KEYS = ("hit", "end_error", "reach_time", "initial_direction_error", "regio
              "chosen_correct", "final_error", "relative_final_error", "time_in_target", "normalized_path_length")
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results_blind")
+TASK_NAME = "reaching_blind_test"
 WINDOW = "BoMI - Blind reaching"
 
 # Colours (BGR)
@@ -259,6 +289,7 @@ class BlindTest:
         self.results_dir = results_dir
         os.makedirs(results_dir, exist_ok=True)
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.t_launch = time.time()
         self.base = os.path.join(results_dir, session_name(subject, f"blind_test{test_number}", results_dir))
 
         # Session/trial state (times are time.time())
@@ -272,9 +303,14 @@ class BlindTest:
         self.hand = []
         self.end_reason = None
 
+        # Raw log (log_frame): one row per frame of the block
+        self.raw = RawLog(RAW_COLUMNS)
+        self._raw_trial = None     # (trial, target, x, y) of the rows: kept after the last trial ends
+
     # --- trial flow ---
     def start(self, t: float) -> None:
         self.t_start = t
+        self.raw.begin(t)
         self._next_trial(t)
 
     def _next_trial(self, t: float) -> None:
@@ -282,8 +318,12 @@ class BlindTest:
         if self.trial_i >= len(self.trials):
             self.trial = None
             self.end_reason = "completed"
+            self.raw.event("block_end")
             return
         self.trial = self.trials[self.trial_i]
+        self.raw.event("target_on")
+        self.raw.new_goal()
+        self._raw_trial = (self.trial_i + 1, self.trial["target"], self.trial["x"], self.trial["y"])
         self.t_shown = t
         self.t_inside = None
         self.t_enter = None
@@ -300,6 +340,7 @@ class BlindTest:
             return
         if t - self.t_shown >= TRIAL_S:
             t_change = self.t_shown + TRIAL_S
+            self.raw.event("timeout")
             self._end_trial(t_change)
             self._next_trial(t_change)
             if not self.active():
@@ -313,6 +354,19 @@ class BlindTest:
             self.t_inside = t
         if self.t_enter is None and self.t_inside is not None and t - self.t_inside >= DWELL_S:
             self.t_enter = self.t_inside
+
+    def log_frame(self, t: float, cx: float, cy: float, hand_detected: bool, latent: tuple, raw: tuple,
+                  extra: tuple = ()) -> None:
+        """One row of the raw log (see the module docstring), after update() of
+        the same frame: (cx, cy) the cursor on the canvas, latent the 2
+        autoencoder outputs and raw the unclipped, unfiltered cursor in canvas
+        px (both None without a hand), extra its TRAJECTORY_EXTRA values.
+        Only the frames of the block are logged."""
+        if not self.raw.track(hand_detected, raw if hand_detected else None) or self._raw_trial is None:
+            return
+        trial, target, tx, ty = self._raw_trial
+        self.raw.row(t, {"trial": trial, "target_id": target, "target_x": f"{tx:.2f}", "target_y": f"{ty:.2f}"},
+                     cx, cy, hand_detected, latent, raw, extra, last=bool(self.end_reason))
 
     def _end_trial(self, t: float) -> None:
         self._record_trial(t, success=True, reason="completed")
@@ -347,9 +401,23 @@ class BlindTest:
         reason = reason or self.end_reason or "aborted"
         if self.active():
             self._record_trial(t, success=False, reason=reason)
+        self.raw.finish()   # events not logged yet (abort, unread last frame) + block_end on the last row
         blocks = block_summaries(self.results, BLOCK_SIZE, keys=TRIAL_KEYS)
+        name = os.path.basename(self.base)
         summary = {
-            "subject": self.subject, "test": self.test_number, "end_reason": reason,
+            "subject": self.subject,
+            "task": TASK_NAME,
+            "protocol_step": f"blind_test{self.test_number}",
+            "test": self.test_number, "end_reason": reason,
+            "session_start": iso_time(self.t_launch),   # cursor preview
+            "block_start": iso_time(self.t_start),      # ENTER: first target
+            "block_end": iso_time(t),
+            "files": {k: name + suffix for k, suffix in (
+                ("trials", "_trials.csv"), ("blocks", "_blocks.csv"), ("trajectory", "_trajectory.csv"),
+                ("raw", "_raw.csv"), ("summary", "_summary.json"))} | {"calibration_map": self.setup.get("map")},
+            "n_trials_completed": sum(1 for r in self.results if r["success"]),   # ran their full trial_s
+            "frames": self.raw.frame_stats((self.setup.get("fps") or {}).get("webcam_nominal")),
+            "experimenter_notes": None,   # asked at the end (ask_notes)
             "n_trials_total": len(self.trials),
             "session_duration": (t - self.t_start) if self.t_start is not None else 0.0,
             "timestamp": self.timestamp,
@@ -366,7 +434,16 @@ class BlindTest:
                 "canvas": [CANVAS_W, CANVAS_H], "target_radius": TARGET_RADIUS,
                 "targets": {str(k): list(v) for k, v in sorted(self.positions.items())},
                 "target_sequence": [tr["target"] for tr in self.trials],
-                "trial_s": TRIAL_S, "end_window_s": END_WINDOW_S, "dwell_s": DWELL_S,
+                "trial_s": TRIAL_S, "timeout": TRIAL_S,   # every target is replaced after trial_s, whatever happens
+                "end_window_s": END_WINDOW_S, "dwell_s": DWELL_S,
+                "sequence_file": self.setup.get("sequence_file"),
+                "sequence_rule": (f"every target {N_REPETITIONS} times in seeded random order (seed "
+                                  f"{SEQUENCE_SEED + 1}): all {N_TARGETS} once before any repeat, never the same "
+                                  "twice in a row; the file is frozen, same for every test and participant"),
+                "first_target_rule": ("the first target of the sequence appears at ENTER (experimenter), wherever "
+                                      "the cursor is; each next one where the previous trial ended"),
+                "region_x_edges": list(reaching_regions.REGION_X), "region_y_edges": list(reaching_regions.REGION_Y),
+                "raw_columns": list(RAW_COLUMNS),
                 "motion_onset_speed": MOTION_ONSET_SPEED, "speed_peak_threshold": SPEED_PEAK_THRESHOLD,
             },
         }
@@ -394,6 +471,7 @@ class BlindTest:
                 w.writerow(["trial", "target", "t", "x", "y", "hand_detected", *TRAJECTORY_EXTRA])
                 w.writerows((i, k, f"{ts - self.t_start:.4f}", f"{x:.2f}", f"{y:.2f}", h, *fmt_extra(extra))
                             for i, k, ts, x, y, h, extra in self.trajectory)
+        self.raw.write(self.base + "_raw.csv")
         with open(self.base + "_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         return summary
@@ -484,7 +562,8 @@ def main() -> None:
     test = BlindTest(subject, args.test, trials)
     bomi.open_camera_window(cap)   # before the test window, which keeps the keyboard focus
     screen = Screen()
-    test.setup = session_setup(calib_path, bomi_map, screen)
+    test.setup = session_setup(calib_path, bomi_map, screen, cap, args.cam, args.model)
+    test.setup["sequence_file"] = os.path.basename(args.sequence)
     cursor_filter = bomi.CursorFilter()
     trace = bomi.CursorTrace(bomi_map)   # unclipped / not customized versions of the cursor, for the log
     # Map space (BASE_WIDTH x BASE_HEIGHT) -> canvas
@@ -501,7 +580,13 @@ def main() -> None:
             t = time.time()
             cx = min(max(crs_x * sx, 0.0), CANVAS_W)
             cy = min(max(crs_y * sy, 0.0), CANVAS_H)
-            test.update(t, cx, cy, hand_detected, extra_coordinates(screen, cx, cy, trace))
+            extra = extra_coordinates(screen, cx, cy, trace)
+            test.update(t, cx, cy, hand_detected, extra)
+            if frame is not None:   # a frame that could not be read is not a frame of the raw log
+                test.log_frame(t, cx, cy, hand_detected, trace.latent,
+                               trace.raw and (trace.raw[0] * sx, trace.raw[1] * sy), extra)
+            else:
+                test.raw.read_failed()
             waiting = test.t_start is None
             can_start = waiting and t - t_launch >= START_CURSOR_S
             message = "ENTER to start" if can_start else ""
@@ -536,7 +621,8 @@ def main() -> None:
                   + f"{fmt(a[f'mean_{m}']):>9s}" + "".join(f"{fmt(c[m]['delta']):>9s}" for c in previous.values()))
     elif args.test > 1:
         print(f"\n  no earlier test of '{subject}' in {RESULTS_DIR}: nothing to compare")
-    print(f"  results: {test.base}_trials.csv / _blocks.csv / _trajectory.csv / _summary.json")
+    print(f"  results: {test.base}_trials.csv / _blocks.csv / _trajectory.csv / _raw.csv / _summary.json")
+    ask_notes(test.base + "_summary.json")
 
 
 if __name__ == "__main__":
