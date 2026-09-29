@@ -63,7 +63,7 @@ import display
 import graphs
 import session_metrics
 
-DEFAULT_ROBOT_IP = "10.186.13.12"
+DEFAULT_ROBOT_IP = "192.168.1.60"
 
 SELECTION_HOLD_SECONDS = reachy_selection.DWELL_HOLD_SECONDS          # cursor preview holds
 MODE_SWITCH_HOLD_SECONDS = reachy_selection.MODE_SWITCH_HOLD_SECONDS  # driving dwells: -> pre-grasp pose, -> object selection, -> placement grid, Repositioning -> back
