@@ -17,7 +17,11 @@ import argparse
 import os
 import sys
 
+# XWayland: cv2's fullscreen hint only works there (as in reachy_control.py)
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
 import cv2
+import numpy as np
 from mediapipe.tasks.python.core import base_options
 from mediapipe.tasks.python.vision import hand_landmarker
 from mediapipe.tasks.python.vision.core import vision_task_running_mode
@@ -66,6 +70,12 @@ def _customize_and_save(cap, landmarker, calib_path: str, subject: str) -> None:
 
     print(f"\n=== CUSTOMIZE '{calib_path}' (nothing is sent anywhere) ===")
     print(HELP_TEXT)
+
+    cv2.namedWindow(map_window, cv2.WINDOW_NORMAL)
+    cv2.imshow(map_window, np.zeros((2, 2, 3), dtype="uint8"))  # FULLSCREEN only sticks after a first frame
+    cv2.waitKey(1)
+    cv2.setWindowProperty(map_window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    safety.force_fullscreen(map_window)  # some Qt builds ignore the request above; ask the WM directly too
 
     while True:
         _, crs_x, crs_y, _ = bomi_teleop.update_bomi_cursor(

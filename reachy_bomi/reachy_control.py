@@ -22,7 +22,7 @@ Phases:
      another one?" (No runs _finish_session).
   5. Transport: with the object in hand, head down again, cursor preview and
      Control at reduced speed (head camera).
-  6. Placement: a region-5 dwell opens a torso frame with the placement grid
+  6. Placement: a region-5 dwell + Yes on the dialog opens a torso frame with the placement grid
      (red = unreachable); Repositioning is available there too. Select a cell
      -> confirm -> place -> arms retracted -> back up, rotate 180 deg,
      default posture. A place that cannot be executed re-offers the grid; a
@@ -494,15 +494,36 @@ def _transport_navigation(cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y
 
     print("\n=== TRANSPORT ===  Q = quit  |  hold the cursor centered (region 5) "
           f"for {MODE_SWITCH_HOLD_SECONDS:.0f}s to choose where to place the object")
-    crs_x, crs_y, quit_now = _drive_until_center_dwell(
-        cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y, mobile_base,
-        max_linear=bomi_teleop.MAX_LINEAR * HALVED_SPEED_FACTOR,
-        max_angular=bomi_teleop.MAX_ANGULAR * HALVED_SPEED_FACTOR,
-        hold_seconds=MODE_SWITCH_HOLD_SECONDS, odometry_mode=session_metrics.MODE_TRANSPORT,
-    )
-    if not quit_now and _metrics is not None:
-        _metrics.dwell(True)
-        _metrics.placement_grid()
+    while True:
+        crs_x, crs_y, quit_now = _drive_until_center_dwell(
+            cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y, mobile_base,
+            max_linear=bomi_teleop.MAX_LINEAR * HALVED_SPEED_FACTOR,
+            max_angular=bomi_teleop.MAX_ANGULAR * HALVED_SPEED_FACTOR,
+            hold_seconds=MODE_SWITCH_HOLD_SECONDS, odometry_mode=session_metrics.MODE_TRANSPORT,
+        )
+        if quit_now:
+            break
+
+        decision, crs_x, crs_y = reachy_selection.confirm_bomi(
+            cap, landmarker, bomi_map, cursor_filter, crs_x, crs_y,
+            lines=["Do you want to place the object here?"],
+            on_frame=lambda: _stop_base(mobile_base),
+        )
+        if _metrics is not None:
+            _metrics.dwell(decision)
+        if decision is None:
+            quit_now = True
+            break
+        if decision:
+            if _metrics is not None:
+                _metrics.placement_grid()
+            break
+        # No: back to driving, through a cursor preview
+        cursor_filter.reset(crs_x, crs_y)
+        crs_x, crs_y = bomi_teleop.cursor_preview_phase(
+            cap, landmarker, bomi_map, cursor_filter=cursor_filter, crs_x=crs_x, crs_y=crs_y, show_cam=False,
+            hold_seconds=SELECTION_HOLD_SECONDS,
+        )
     safety.destroy_window(map_window)
     stop_camera_viewer()
     return crs_x, crs_y, quit_now
