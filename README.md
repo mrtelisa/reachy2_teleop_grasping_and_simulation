@@ -1,239 +1,93 @@
-# reachy2_teleop_grasping_and_simulation
+# Reachy 2 BoMI Teleoperation: Experimental Protocol
 
-Hand-driven BoMI cursor for Reachy 2: the experimental protocol that checks whether a participant can learn the hand -> cursor map before teleoperating the robot.
+This branch contains the files used during the experimental protocol of the project. The protocol had several phases. The exercises run from this branch, all based on the markerless Body-Machine Interface (BoMI), are:
 
-A webcam tracks the operator's hand with [MediaPipe](https://developers.google.com/mediapipe), and a calibrated autoencoder map turns the hand pose into a 2D cursor. The screen is split into the same 3×3 regions as the teleoperation interface.
+- **Blind test:** reaching targets without visual feedback of the cursor
+- **Reaching training:** reaching targets in the 9 regions of the control interface
+- **Free exploration in simulation:** driving the Reachy 2 mobile base in Gazebo
 
-The protocol, in order:
+The teleoperation and grasping on the real robot are in the [`main`](../../tree/main) branch.
 
-| Step | Script | Where |
-|---|---|---|
-| Map calibration (once) and customization (per participant) | `calibrate_bomi.py`, `customize_bomi.py` (`load_bomi.py` to try a map) | operator PC |
-| Training **pre**: 96 targets | `reaching_regions.py --phase pre` | operator PC |
-| Blind test (5 per participant, numbered 1-5) | `reaching_blind.py --test N` | operator PC |
-| Training **post**: 96 targets | `reaching_regions.py --phase post` | operator PC |
-| Free exploration: driving Reachy 2 in simulation | `socket_client.py` + the ROS 2 package in the Reachy container | operator PC + container |
+## Method
 
----
+### Body-Machine Interface
 
-## Requirements
+Same interface as in `main`: 21 MediaPipe hand landmarks (42 features) → autoencoder (42 → 32 → 32 → **2** → 32 → 32 → 42) → 2D cursor. Before the exercises, the shared map is customized for each participant (rotation, flip, gain, offset). The screen is split into the same 3×3 regions used to command the robot.
+
+### Blind test
+
+- The cursor is **never shown**: only the current target is on screen (centres of regions 2, 4, 5 and 9).
+- 12 trials of 4 s each (every target 3 times), in a fixed order (`config/blind_targets.csv`).
+- Each test is compared with the previous tests of the same participant, to track how the map is learned.
+
+### Reaching training
+
+- Region 5 is the *home*, and each outer region has a target circle at its centre.
+- 96 targets (8 outer regions × 12), alternating home → target → home, in a fixed order (`config/cursor_regions.csv`).
+- For the first **1 s** after a target appears the cursor is **hidden**, then it is shown again.
+- A goal is reached after a **0.5 s dwell** inside its circle.
+- Two sessions, `pre` and `post`, which are compared automatically.
+
+### Free exploration in simulation
+
+The participant drives the simulated Reachy 2 mobile base in a room with obstacles (`worlds/familiarization.world`), with the same 9-region velocity map as the real teleoperation. The cursor runs on the operator PC and sends velocities over TCP to a ROS 2 node, which publishes them on `/cmd_vel`.
+
+This exercise requires Pollen Robotics' **Reachy 2 Docker container** (ROS 2 + Gazebo), with this package built in its workspace.
+
+### Metrics
+
+Computed for every trial (`reaching_metrics.py`):
+
+- **Kinematics:** reach, reaction and movement time, normalized path length, maximum deviation, smoothness (log dimensionless jerk), speed peaks, initial direction error.
+- **Map learning:** target reached while the cursor was hidden, correct region when the cursor reappears, wrong regions visited.
+- **Blind test:** hit rate, final and minimum error from the target, time in the target region.
+
+Results are saved as per-trial, per-block and trajectory CSVs, plus a JSON summary. The simulation is recorded as a rosbag.
+
+## Repository structure
+
+```
+reachy_bomi/
+├── bomi.py                # hand tracking, autoencoder map, cursor filter
+├── calibrate_bomi.py      # calibration recording + autoencoder training
+├── customize_bomi.py      # per-participant customization of the map
+├── load_bomi.py           # try a saved map
+├── reaching_blind.py      # blind test
+├── reaching_regions.py    # reaching training (pre/post)
+├── reaching_metrics.py    # per-trial metrics
+├── socket_client.py       # simulation, operator PC: cursor → velocities over TCP
+├── socket_server.py       # simulation, container: TCP → ROS 2, launches the scenario
+├── cmd_vel_publisher.py   # simulation, container: velocities → /cmd_vel
+├── scenarios.py           # reads the simulation scenarios
+├── display.py             # window placement
+launch/                    # ROS 2 launch files
+worlds/                    # Gazebo world
+config/                    # fixed target sequences, simulation scenarios
+scripts/                   # MediaPipe model, container setup
+```
+
+## Usage
+
+Python packages: `pip install -r requirements.txt`. All scripts are run from `reachy_bomi/`.
 
 ```bash
-python3 -m venv ~/.venvs/reachy_bomi && source ~/.venvs/reachy_bomi/bin/activate
-pip install -r requirements.txt     # mediapipe, opencv-python, tensorflow, numpy, scipy
+# Per-participant customization of the shared map
+python3 customize_bomi.py shared
+
+# Blind test (N = test number)
+python3 reaching_blind.py --test N --subject SXXX
+
+# Reaching training
+python3 reaching_regions.py --phase pre --subject SXXX
+python3 reaching_regions.py --phase post --subject SXXX
 ```
 
-The MediaPipe **Tasks API** (`HandLandmarker`) needs a `hand_landmarker.task` model file. The `mediapipe` pip package doesn't include it, so a copy is tracked at `scripts/hand_landmarker.task`, which is the default for `--model`. If you need to download it again:
+Free exploration in simulation:
 
 ```bash
-curl -o scripts/hand_landmarker.task \
-  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
-```
+# Inside the Reachy 2 container
+ros2 launch reachy_bomi bomi_bridge.launch.py
 
-All the scripts are run from `reachy_bomi/`:
-
-```bash
-cd reachy_bomi
-```
-
-Every window the scripts open (cursor map, tests, webcam, calibration) goes on the **laptop's built-in screen**, whichever terminal or monitor you launch them from ([`display.py`](reachy_bomi/display.py)). Fullscreen windows fill that screen. To use another screen, set `BOMI_SCREEN` to its `xrandr` output name, e.g. `BOMI_SCREEN=DP-1 python3 reaching_blind.py ...`. `customize_bomi.py`, `reaching_regions.py` and `reaching_blind.py` also open a resizable **camera window** (webcam + tracked hand) on the **external monitor**, for the experimenter only (`BOMI_MONITOR` to choose another output). The keys (`ENTER`, `Q`, ...) are read by the window, not by the terminal: a new window takes the keyboard focus, and if you click back on the terminal, click the window (or `Alt+Tab`) before pressing them.
-
----
-
-## Calibration maps
-
-This follows the markerlessBoMI procedure. There is **one** autoencoder map, trained once on a single 90 s recording of the experimenter's hand. Each participant only gets a customization of it (rotation / gain / offset). The tools share the `calibrations/` folder, and names can be given without `.npz`.
-
-```bash
-python3 calibrate_bomi.py [NAME] [--cam 0] [--model PATH] [--duration 90] [--recalibrate]   # once
-python3 customize_bomi.py [SUBJECT] [--base shared] [--cam 0] [--model PATH]                # per participant
-python3 load_bomi.py SUBJECT|NAME [--cam 0] [--model PATH]                                  # try a map fullscreen (familiarisation)
-```
-
-**Once: `calibrate_bomi.py`** (markerlessBoMI's "Calibration" + "Calculate BoMI map"):
-1. *Continuous calibration*: after `SPACE`, the hand is recorded continuously for `CALIB_DURATION_S` = 90 s. Every frame with a tracked hand is kept and no samples are picked by hand, so keep moving the hand through the whole workspace while the remaining time is shown. The raw 42-feature samples are saved to `calibrations/shared_calib.npy`. If that file already exists, the tool offers to reuse it and skip the recording (`--recalibrate` forces a new one). This is how you retrain after changing the AE hyperparameters in `bomi.py`.
-2. *Offline training*: the autoencoder (32-32-2-32-32, tanh, Adam 0.02, 3001 full-batch epochs) is trained on the saved samples the same way markerlessBoMI's `train_ae` does it:
-   - all-zero rows are dropped;
-   - the samples are shuffled and split 80/20 into train and test;
-   - the screen scale/offset comes from the training latent codes.
-
-   The VAF and the latent-variance share of each code unit are printed for train and test. They are also stored in the `.npz` and shown again whenever the map is loaded. Training takes a couple of minutes on CPU. The map is saved to `calibrations/shared.npz` and previewed live (`Q` quits). With a `NAME` other than `shared`, the map is saved under that name (then use `customize_bomi.py --base NAME`).
-
-**Per participant: `customize_bomi.py SUBJECT`** (markerlessBoMI's "Customization"):
-- It loads `calibrations/shared.npz` and shows the fullscreen cursor map driven by the participant's hand.
-- Rotate/flip/scale/offset the map (`[ ]`, `i`/`o`, `-`/`+`, `hjkl`, `r` resets) until the whole 3×3 grid is comfortably reachable and the rest position sits in region 5.
-- `S` asks for the participant id (`SUBJECT` from the command line is the default, `-` cancels) and saves the map as `calibrations/<id>_<YYYYMMDD_HHMMSS>.npz`. For example, typing `elisa` gives `elisa_20260916_155827.npz`.
-- `reaching_regions.py` and `load_bomi.py`, given `SUBJECT`, load the **latest** of these files. A redone customization therefore simply replaces the previous one, and the older files stay on disk.
-- Retraining the shared map invalidates the existing customized maps, because they were made on the old one. `calibrate_bomi.py` warns about this.
-
-`load_bomi.py SUBJECT` shows a participant's latest map (or any map by name, e.g. `shared`) on the fullscreen cursor map. Use it for familiarisation or to sanity-check a map.
-
----
-
-## Training — `reaching_regions.py`
-
-```bash
-python3 reaching_regions.py --subject S001 --phase pre|post [--calib <name>] [--cam 0] [--sequence file.csv]
-```
-
-The 1200×650 canvas is scaled to the whole screen (the map's 2550×1500 space is scaled onto it) and divided into the 9 regions of the teleoperation interface:
-
-```
- 1 | 2 | 3
- 4 | 5 | 6      5 = home: a circle at the centre
- 7 | 8 | 9      each outer region: a target circle at its centre (all circles: radius 70 px)
-```
-
-The sequence alternates home -> region -> home -> region .... There are **96 targets**, each of the 8 outer regions 12 times, in a seeded random order: every region appears once before any repeat, and never twice in a row. The sequence is frozen in [`config/cursor_regions.csv`](config/cursor_regions.csv), so it is the same for every participant. It is regenerated only if the file is missing (`N_REPETITIONS` in the script).
-
-A session is the whole sequence once (**96 targets**); at the end the window closes and the results are saved. The protocol has two training sessions, `--phase pre` and `--phase post`, with a blind test in between.
-
-How a session runs:
-1. **Home**: the centre circle is shown. The **session timer starts the first time the cursor enters it**.
-2. **Region**: as soon as the home is reached, it disappears and the **yellow target circle at the centre of the region** is shown. For the first **1 s** (`HIDDEN_S`) the **cursor is not drawn**. The goal is to see whether the participant can reach the target from the learned map alone, without visual feedback. After that second the cursor reappears.
-3. Every goal, home or target, is reached when the cursor **stays inside its circle for 0.5 s** (`DWELL_S`, the same for both), whether the cursor is hidden or not. Leaving the circle restarts the count. A circle turns blue while the cursor is inside it (a target only once the cursor is visible). The home is then shown again for the return.
-4. The session ends when the cursor is back in the home after the last target (the timer stops there), or on `Q`/`Esc`: 96 targets, each with its return to the home.
-
-Results go to `results_regions/`. A subject with a previous session of the same phase gets `_1`, `_2`, ... appended to the file names.
-
-| File | Content |
-|---|---|
-| `<subject>_regions_<phase>_trials.csv` | one row per goal (home or region): times and metrics |
-| `<subject>_regions_<phase>_blocks.csv` | one row per block of 8 targets (one repetition of every region): the learning curve, 12 blocks |
-| `<subject>_regions_<phase>_trajectory.csv` | every cursor sample: trial, kind, region, t, x, y, `cursor_visible` |
-| `<subject>_regions_<phase>_summary.json` | `time_total` (= the on-screen timer: first entry into the home -> last goal); means and medians over all region goals and the returns, per region and per block, plus the config |
-
-A **post** session is compared with the subject's latest **pre** session: the differences (post − pre) of the main region metrics are printed and stored under `comparison_with_pre` in the summary.
-
-Metrics for every goal ([`reaching_metrics.py`](reachy_bomi/reaching_metrics.py), in canvas px). For a region goal, the ideal target point is the centre of its target circle.
-
-| Metric | Meaning |
-|---|---|
-| `reach_time` | goal shown -> entering the target (or home) circle, for the entry that completed the 0.5 s dwell |
-| `reaction_time`, `movement_time` | goal shown -> movement onset, and onset -> entering |
-| `path_length`, `normalized_path_length` | path / straight-line displacement (1 = perfectly straight) |
-| `max_deviation` | max perpendicular distance from the ideal line onset -> goal centre |
-| `dimensionless_jerk`, `log_dimensionless_jerk` | smoothness (Hogan & Sternad 2009) |
-| `n_speed_peaks`, `mean_speed`, `peak_speed` | speed profile |
-| `initial_direction_error`, `initial_direction_error_peak` | angle [deg] between the initial movement direction (onset -> position 0.2 s later, or at the first speed peak) and the direction onset -> goal centre: the aiming error before any correction |
-
-Metrics for region goals only:
-
-| Metric | Meaning |
-|---|---|
-| `reached_hidden` | 100 if the target circle was entered (entry of the completed dwell) while the cursor was still hidden, else 0 |
-| `region_at_reveal`, `region_at_reveal_correct` | region of the cursor when it reappears, and 100 if it is the target |
-| `first_region`, `first_region_correct` | first region visited, i.e. stayed in for at least 0.25 s (the target counts at once), and 100 if it is the target |
-| `n_wrong_regions` | distinct other regions visited before the target |
-| `error_at_reveal` | distance [px] from the target centre when the cursor reappears |
-
-Metrics for every goal (home or region):
-
-| Metric | Meaning |
-|---|---|
-| `n_entries` | entries into the circle, the one of the completed dwell included (1 = went in and stayed) |
-| `dwell_time` | first entry -> dwell completed (0.5 s if it stayed at the first entry) |
-
-Main metrics of the analysis (first in the pre/post comparison): `reach_time`, `normalized_path_length`, `initial_direction_error`, `region_at_reveal_correct`, then `n_speed_peaks`, `movement_time`, `reached_hidden`.
-
----
-
-## 4-target blind reaching test (5 per participant)
-
-```bash
-python3 reaching_blind.py --subject S001 --test N   # N = 1..5, the number of the blind test
-```
-
-For example, between the two trainings:
-
-```bash
-python3 reaching_regions.py --subject S001 --phase pre
-python3 reaching_blind.py   --subject S001 --test 1
-python3 reaching_regions.py --subject S001 --phase post
-```
-
-During the test the cursor is **never shown**. Only the **current target** is on screen: an empty yellow circle shown on its own, **the same as the training target of its region** (same position, radius 70 px). Every **4 s** (`TRIAL_S`) it is replaced by the next one, whatever the cursor did. The cursor is still tracked, so the results show whether the participant got there from the learned map alone.
-
-- The 4 targets are the training targets of **regions 2, 4, 5 and 9** (top, left, centre/home, bottom-right; `TARGET_REGIONS`), each numbered as its region.
-- There are **12 trials**: each target 3 times (`N_REPETITIONS`), all 4 once before any repeat, never twice in a row. The order is drawn at random (seeded) and frozen in [`config/blind_targets.csv`](config/blind_targets.csv) (`trial,target,x,y`), so the 5 tests, and every participant, get the same sequence. It is regenerated only if the file is missing.
-- Before the start only the cursor is visible (no target), so the participant can see where the hand is. After 2 s (`START_CURSOR_S`), `ENTER` (experimenter) starts the session and the cursor disappears. `Q`/`Esc` aborts it, and the results so far are still saved.
-- The dot in the top-right corner is green while the hand is tracked and grey when tracking is lost. It shows no position.
-- `--show-cursor` draws the cursor. Use it only to test the setup, never with a participant.
-
-Results go to `results_blind/<subject>_blind_test<N>_{trials,blocks,trajectory}.csv` and `_summary.json` (a repeated test number gets `_1`, `_2`, ... appended). The blocks file has one row per block of 4 trials (each target once). Test N is compared with the subject's latest session of **every earlier test** (1 … N−1): the main metrics of each and the differences (test N − test k) are printed as a table and stored under `comparison_with_previous` in the summary.
-
-Per-trial metrics (canvas px, distances from the target centre). The `reaching_metrics.py` kinematics are also computed, up to the entry of the hit (to the end of the trial for a miss):
-
-| Metric | Meaning |
-|---|---|
-| `hit`, `reach_time` | 100 if the cursor stayed inside the target circle for 0.5 s (`DWELL_S`, as in the training; crossing it is not a hit), and the time to the entry of that stay |
-| `time_in_target`, `on_target_at_end` | % of the 4 s inside the circle, and 100 if inside when the target changes |
-| `initial_error`, `final_error`, `end_error`, `min_error` | distance when shown, when the target changes, mean over the last 1 s, and closest approach |
-| `relative_final_error` | `final_error / initial_error` (0 = perfect, 1 = did not get closer) |
-| `chosen_target`, `chosen_correct` | the target closest to the cursor when the target changes, and 100 if it is the current one |
-| `hand_lost` | % of the trial without a tracked hand |
-| `region_at_end`, `region_at_end_correct` | region (1-9) of the cursor when the target changes, and 100 if it is the target's region (the command the robot would get) |
-| `end_time_in_region`, `time_in_region` | % of the last 1 s, and of the whole trial, in the target's region |
-| `region_hit`, `region_reach_time` | 100 if the cursor stayed in the target's region for 0.5 s, and the time to the entry of that stay |
-
----
-
-## Free exploration (simulation)
-
-The participant drives the simulated Reachy 2 mobile base (Gazebo, in Pollen's Reachy Docker container) with the same hand -> cursor chain and 9-region velocity map as the teleoperation, in a room with a few obstacles (`worlds/familiarization.world`).
-
-**Container side** (this package built in the container's ROS 2 workspace):
-
-```bash
-docker cp scripts/container_tweaks.sh reachy2:/tmp/ && docker exec reachy2 bash /tmp/container_tweaks.sh   # once per new container
-ros2 launch reachy_bomi bomi_bridge.launch.py   # leave it running: socket server on port 5051
-```
-
-**Operator PC**:
-
-```bash
-python3 socket_client.py <server_ip> --subject S001 --scenario familiarization [--record true] [--start-rviz false] [--show-cam]
-```
-
-1. The client sends the scenario to the socket server, which launches `bomi_control.launch.py`: Gazebo with the scenario's world, `cmd_vel_publisher` (velocities from the socket -> `/cmd_vel`, 20 Hz) and, with `--record true`, a ROS 2 bag. The noVNC view of Gazebo opens in the browser, and the client waits `--sim-wait` (10 s) for the simulation.
-2. **Cursor preview**: the cursor map (pinned in the top-left corner of the laptop screen, above the browser) moves, nothing is sent. Hold the cursor in region 5 for 5 s to start.
-3. **Control**: cursor -> 9-region velocity (`MAX_LINEAR` 1 m/s, `MAX_ANGULAR` 0.8 rad/s) -> socket -> robot. `Q`/`Esc` stops the robot; when the client disconnects, the server stops the scenario.
-
-Data: the bag (`/tf`, `/odom`, `/cmd_vel`, `/scan`) goes to `reachy_bomi_bags/Familiarization_<date>_<time>/`, next to the installed `launch/` folder of the package in the container. Scenarios are listed in `config/scenarios.yaml`.
-
----
-
-## Package layout
-
-```
-reachy2_teleop_grasping_and_simulation/
-├── reachy_bomi/
-│   ├── bomi.py                 # shared hand -> cursor chain: MediaPipe, autoencoder map, filter, calibrations/ helpers
-│   ├── display.py              # puts the OpenCV windows on the laptop screen, the camera view on the monitor
-│   ├── calibrate_bomi.py       # once: 90 s continuous calibration + offline AE training -> calibrations/shared.npz
-│   ├── customize_bomi.py       # per participant: rotate/flip/scale/offset the shared map -> calibrations/<SUBJECT>_<date>_<time>.npz
-│   ├── load_bomi.py            # try a participant's / any saved map on the fullscreen cursor map
-│   ├── reaching_regions.py     # training: 9-region reaching, 96 targets (--phase pre|post)
-│   ├── reaching_blind.py       # 4-target blind reaching test, 5 per participant (--test 1..5)
-│   ├── reaching_metrics.py     # per-trial kinematic metrics
-│   ├── socket_client.py        # free exploration, operator PC: hand -> cursor -> velocities over TCP
-│   ├── socket_server.py        # free exploration, container: TCP -> ROS topics, launches the scenario
-│   ├── cmd_vel_publisher.py    # free exploration, container: socket velocities -> /cmd_vel
-│   └── scenarios.py            # free exploration: reads config/scenarios.yaml
-├── launch/
-│   ├── bomi_bridge.launch.py   # container: the socket server (left running)
-│   └── bomi_control.launch.py  # container: Gazebo + cmd_vel_publisher + bag, one scenario
-├── worlds/
-│   └── familiarization.world   # free exploration room
-├── config/
-│   ├── cursor_regions.csv      # frozen region sequence of the training (96 targets, done twice)
-│   ├── blind_targets.csv       # frozen sequence of the blind test (12 trials)
-│   └── scenarios.yaml          # free exploration scenarios (world, bag prefix)
-├── scripts/
-│   ├── hand_landmarker.task    # MediaPipe model (tracked, see Requirements)
-│   └── container_tweaks.sh     # one-off tweaks to the Reachy container (hides the lidar rays in Gazebo)
-├── calibrations/               # shared_calib.npy, shared.npz, <SUBJECT>_<date>_<time>.npz (not tracked)
-├── package.xml, setup.py, setup.cfg, resource/   # ROS 2 (ament_python) package, for the container side
-├── requirements.txt
-└── README.md
+# On the operator PC
+python3 socket_client.py <container_ip> --port 5051 --scenario familiarization --subject SXXX
 ```
