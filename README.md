@@ -4,6 +4,21 @@ Markerless Body-Machine Interface (BoMI) to teleoperate the mobile base of the *
 
 The operator's hand is tracked by a webcam with MediaPipe. An autoencoder maps the hand landmarks to a 2D cursor, and the cursor position is converted into base velocity commands or into object selection. Grasping relies on YOLOv8 detection and the torso depth camera. All communication with the robot goes through `reachy2_sdk` (gRPC), so the operator PC does not need ROS 2.
 
+<table>
+  <tr>
+    <th align="center">Navigation</th>
+    <th align="center">Grasp</th>
+    <th align="center">Transport</th>
+    <th align="center">Placement</th>
+  </tr>
+  <tr>
+    <td><img src="gifs/navigation.gif" alt="Navigation" width="200"></td>
+    <td><img src="gifs/grasp.gif" alt="Grasp" width="200"></td>
+    <td><img src="gifs/transport.gif" alt="Transport" width="200"></td>
+    <td><img src="gifs/placement.gif" alt="Placement" width="200"></td>
+  </tr>
+</table>
+
 ## Branches
 
 | Branch | Content |
